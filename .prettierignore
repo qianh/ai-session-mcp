@@ -1,0 +1,5 @@
+node_modules
+dist
+.pnpm-store
+.claude
+BrainHub-开发手册-v0.2.md

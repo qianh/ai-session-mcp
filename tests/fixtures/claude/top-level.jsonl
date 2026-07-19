@@ -1,0 +1,4 @@
+{"type":"user","isSidechain":false,"sessionId":"claude-1","timestamp":"2026-07-18T10:00:00.000Z","message":{"role":"user","content":"Review the deployment"}}
+{"type":"assistant","isSidechain":false,"sessionId":"claude-1","timestamp":"2026-07-18T10:01:00.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"secret chain"},{"type":"text","text":"Use a staged rollout."},{"type":"tool_use","name":"Bash","input":{"command":"cat secret"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="}}]}}
+{"type":"tool_result","timestamp":"2026-07-18T10:02:00.000Z","content":"ignored tool output"}
+{"type":"assistant"

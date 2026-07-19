@@ -1,0 +1,5 @@
+{"timestamp":"2026-07-18T11:00:00.000Z","type":"session_meta","payload":{"id":"codex-1","timestamp":"2026-07-18T11:00:00.000Z","source":"cli"}}
+{"timestamp":"2026-07-18T11:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Find the release issue"}]}}
+{"timestamp":"2026-07-18T11:01:00.000Z","type":"event_msg","payload":{"type":"agent_reasoning","text":"ignored reasoning"}}
+{"timestamp":"2026-07-18T11:02:00.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"secret"}}
+{"timestamp":"2026-07-18T11:03:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Pin the release version."}]}}

@@ -1,0 +1,2 @@
+{"type":"user","isSidechain":true,"sessionId":"claude-side","timestamp":"2026-07-18T10:00:00.000Z","message":{"role":"user","content":"internal task"}}
+{"type":"assistant","isSidechain":true,"sessionId":"claude-side","timestamp":"2026-07-18T10:01:00.000Z","message":{"role":"assistant","content":"internal result"}}

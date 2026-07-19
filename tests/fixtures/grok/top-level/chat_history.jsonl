@@ -1,0 +1,5 @@
+{"type":"system","content":"ignored system"}
+{"type":"user","content":[{"type":"text","text":"Compare the options"}]}
+{"type":"reasoning","encrypted_content":"ignored"}
+{"type":"assistant","content":"Choose the simpler deployment.","tool_calls":[{"name":"shell","arguments":"secret"}]}
+{"type":"tool_result","content":"ignored output"}

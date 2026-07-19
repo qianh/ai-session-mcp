@@ -1,0 +1,2 @@
+{"timestamp":"2026-07-18T11:00:00.000Z","type":"session_meta","payload":{"id":"codex-side","timestamp":"2026-07-18T11:00:00.000Z","source":{"subagent":"review"}}}
+{"timestamp":"2026-07-18T11:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"internal review"}]}}
