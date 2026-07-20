@@ -66,6 +66,46 @@ describe("upload service", () => {
     expect(state.listPending(10)).toEqual([]);
   });
 
+  it("processes sessions up to the configured concurrency", async () => {
+    const { session, state } = await fixture();
+    const base = new MemoryDrive();
+    let activeLists = 0;
+    let maxActiveLists = 0;
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "list") {
+          return async (...args: Parameters<MemoryDrive["list"]>) => {
+            activeLists += 1;
+            maxActiveLists = Math.max(maxActiveLists, activeLists);
+            await new Promise((resolve) => setTimeout(resolve, 15));
+            try {
+              return await target.list(...args);
+            } finally {
+              activeLists -= 1;
+            }
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const sessions = Array.from({ length: 6 }, (_value, index) => ({
+      ...session,
+      conversationId: `parallel-${index}`,
+    }));
+    const service = new UploadService({
+      drive,
+      state,
+      deviceId: "device-1",
+      concurrency: 3,
+    });
+
+    const result = await service.uploadSessions(sessions, { dryRun: true });
+
+    expect(result.eligible).toBe(6);
+    expect(maxActiveLists).toBe(3);
+  });
+
   it("uploads, verifies, and makes a repeated run idempotent", async () => {
     const { session, state, sourceBytes } = await fixture();
     const drive = new MemoryDrive();
@@ -181,6 +221,110 @@ describe("upload service", () => {
       dryRun: true,
     });
     expect(result.images).toBe(1);
+  });
+
+  it("waits for a shared image upload before writing every session", async () => {
+    const { session, state } = await fixture();
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const sessions = ["shared-image-1", "shared-image-2"].map(
+      (conversationId): NormalizedSession => ({
+        ...session,
+        conversationId,
+        turns: [
+          {
+            role: "user",
+            text: conversationId,
+            images: [{ kind: "embedded", mediaType: "image/png", data: png }],
+          },
+        ],
+      }),
+    );
+    const base = new MemoryDrive();
+    let imageReady = false;
+    let imagePuts = 0;
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "put") {
+          return async (...args: Parameters<MemoryDrive["put"]>) => {
+            const [input] = args;
+            if (input.path.startsWith("images/sha256/")) {
+              imagePuts += 1;
+              await new Promise((resolve) => setTimeout(resolve, 25));
+              const result = await target.put(...args);
+              imageReady = true;
+              return result;
+            }
+            if (input.mimeType === "text/markdown" && !imageReady) {
+              throw new Error("session referenced an image before upload");
+            }
+            return target.put(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const service = new UploadService({
+      drive,
+      state,
+      deviceId: "device-1",
+      concurrency: 2,
+    });
+
+    const result = await service.uploadSessions(sessions, { dryRun: false });
+
+    expect(result.uploaded).toBe(2);
+    expect(imagePuts).toBe(1);
+  });
+
+  it("retries a shared image after a transient upload lookup failure", async () => {
+    const { session, state } = await fixture();
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    const sessions = ["retry-image-1", "retry-image-2"].map(
+      (conversationId): NormalizedSession => ({
+        ...session,
+        conversationId,
+        turns: [
+          {
+            role: "user",
+            text: conversationId,
+            images: [{ kind: "embedded", mediaType: "image/png", data: png }],
+          },
+        ],
+      }),
+    );
+    const base = new MemoryDrive();
+    let imageLookups = 0;
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "list") {
+          return async (...args: Parameters<MemoryDrive["list"]>) => {
+            const [query] = args;
+            if (query.appProperty?.key === "brainhubImageSha") {
+              imageLookups += 1;
+              if (imageLookups === 1)
+                throw new Error("transient Drive lookup failure");
+            }
+            return target.list(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const service = new UploadService({
+      drive,
+      state,
+      deviceId: "device-1",
+      concurrency: 1,
+    });
+
+    const result = await service.uploadSessions(sessions, { dryRun: false });
+
+    expect(result.uploaded).toBe(1);
+    expect(imageLookups).toBe(2);
   });
 
   it("redacts credentials and internal hosts from remote image references", async () => {

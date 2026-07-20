@@ -34,6 +34,7 @@ interface UploadServiceOptions {
   state: StateStore;
   deviceId: string;
   redaction?: RedactionOptions;
+  concurrency?: number;
 }
 
 function compareCandidates(left: DriveEntry, right: DriveEntry): number {
@@ -81,12 +82,14 @@ export class UploadService {
   readonly #state: StateStore;
   readonly #deviceId: string;
   readonly #redaction: RedactionOptions;
+  readonly #concurrency: number;
 
   constructor(options: UploadServiceOptions) {
     this.#drive = options.drive;
     this.#state = options.state;
     this.#deviceId = options.deviceId;
     this.#redaction = options.redaction ?? {};
+    this.#concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
   }
 
   async uploadSessions(
@@ -110,141 +113,173 @@ export class UploadService {
       warnings: [],
     };
     const seenImageHashes = new Set<string>();
-
-    for (const original of sessions) {
-      const redacted = redactSession(original, this.#redaction);
-      output.redactions += redacted.count;
-      let processedImages: Awaited<ReturnType<typeof processSessionImages>>;
-      let rendered: ReturnType<typeof renderSessionMarkdown>;
-      try {
-        processedImages = await processSessionImages(redacted.session);
-        rendered = renderSessionMarkdown(redacted.session, {
-          redactionVersion: 1,
-          redactionCount: redacted.count,
-          imageReferences: processedImages.references,
+    const imageUploads = new Map<string, Promise<void>>();
+    const ensureImageUploaded = (
+      image: Awaited<
+        ReturnType<typeof processSessionImages>
+      >["artifacts"][number],
+    ): Promise<void> => {
+      const current = imageUploads.get(image.sha256);
+      if (current) return current;
+      const upload = (async () => {
+        const existing = await this.#drive.list({
+          appProperty: { key: "brainhubImageSha", value: image.sha256 },
         });
-      } catch {
-        output.warnings.push({
-          code: "SESSION_PROCESSING_FAILED",
-          message: `${original.source} session ${original.conversationId} could not be prepared`,
+        if (existing.length > 0) return;
+        const uploaded = await this.#drive.put({
+          path: image.drivePath,
+          bytes: image.bytes,
+          mimeType: "image/webp",
+          appProperties: { brainhubImageSha: image.sha256 },
         });
-        continue;
-      }
-      const bytes = Buffer.from(rendered.markdown);
-      const uniqueImages = processedImages.artifacts.filter((image) => {
-        if (seenImageHashes.has(image.sha256)) return false;
-        seenImageHashes.add(image.sha256);
-        return true;
+        const verified = await this.#drive.read(uploaded.id);
+        if (!verified.bytes.equals(image.bytes)) {
+          await this.#drive.trash(uploaded.id);
+          throw new Error("Image verification failed");
+        }
+      })();
+      imageUploads.set(image.sha256, upload);
+      void upload.catch(() => {
+        if (imageUploads.get(image.sha256) === upload) {
+          imageUploads.delete(image.sha256);
+        }
       });
-      output.images += uniqueImages.length;
-      output.estimatedBytes +=
-        bytes.length +
-        uniqueImages.reduce((sum, image) => sum + image.bytes.length, 0);
-      const key = conversationKey(original.source, original.conversationId);
-      const local = this.#state.getSession(key);
-      if (
-        local?.status === "uploaded" &&
-        local.contentSha256 === rendered.contentSha256
-      ) {
-        output.unchanged += 1;
-        continue;
-      }
+      return upload;
+    };
 
-      const existing = await this.#drive.list({
-        appProperty: { key: "brainhubKey", value: key },
-      });
-      const winner = existing.sort(compareCandidates)[0];
-      const remoteUpdatedAt = winner?.appProperties.updatedAt ?? "";
-      const remoteContentSha = winner?.appProperties.contentSha256 ?? "";
-      if (
-        winner &&
-        (remoteUpdatedAt > original.updatedAt ||
-          (remoteUpdatedAt === original.updatedAt &&
-            remoteContentSha >= rendered.contentSha256))
-      ) {
-        output.unchanged += 1;
-        continue;
-      }
-
-      output.eligible += 1;
-      if (options.dryRun) continue;
-      this.#state.markPending({
-        conversationKey: key,
-        source: original.source,
-        conversationId: original.conversationId,
-        sourcePath: original.sourcePath,
-        sourceUpdatedAt: original.updatedAt,
-        contentSha256: rendered.contentSha256,
-      });
-
-      let candidateId: string | null = null;
-      try {
-        for (const image of uniqueImages) {
-          const imageExisting = await this.#drive.list({
-            appProperty: { key: "brainhubImageSha", value: image.sha256 },
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const original = sessions[index];
+        if (!original) return;
+        const redacted = redactSession(original, this.#redaction);
+        output.redactions += redacted.count;
+        let processedImages: Awaited<ReturnType<typeof processSessionImages>>;
+        let rendered: ReturnType<typeof renderSessionMarkdown>;
+        try {
+          processedImages = await processSessionImages(redacted.session);
+          rendered = renderSessionMarkdown(redacted.session, {
+            redactionVersion: 1,
+            redactionCount: redacted.count,
+            imageReferences: processedImages.references,
           });
-          if (imageExisting.length === 0) {
-            const uploadedImage = await this.#drive.put({
-              path: image.drivePath,
-              bytes: image.bytes,
-              mimeType: "image/webp",
-              appProperties: { brainhubImageSha: image.sha256 },
-            });
-            const verifiedImage = await this.#drive.read(uploadedImage.id);
-            if (!verifiedImage.bytes.equals(image.bytes)) {
-              await this.#drive.trash(uploadedImage.id);
-              throw new Error("Image verification failed");
-            }
-          }
+        } catch {
+          output.warnings.push({
+            code: "SESSION_PROCESSING_FAILED",
+            message: `${original.source} session ${original.conversationId} could not be prepared`,
+          });
+          continue;
+        }
+        const bytes = Buffer.from(rendered.markdown);
+        const uniqueImages = processedImages.artifacts.filter((image) => {
+          if (seenImageHashes.has(image.sha256)) return false;
+          seenImageHashes.add(image.sha256);
+          return true;
+        });
+        output.images += uniqueImages.length;
+        output.estimatedBytes +=
+          bytes.length +
+          uniqueImages.reduce((sum, image) => sum + image.bytes.length, 0);
+        const key = conversationKey(original.source, original.conversationId);
+        const local = this.#state.getSession(key);
+        if (
+          local?.status === "uploaded" &&
+          local.contentSha256 === rendered.contentSha256
+        ) {
+          output.unchanged += 1;
+          continue;
         }
 
-        const properties = {
-          brainhubKey: key,
-          source: original.source,
-          conversationId: original.conversationId,
-          deviceId: this.#deviceId,
-          updatedAt: original.updatedAt,
-          contentSha256: rendered.contentSha256,
-        };
-        const candidate = await this.#drive.put({
-          path: `inbox/${original.device}/.${randomUUID()}.tmp`,
-          bytes,
-          mimeType: "text/markdown",
-          appProperties: properties,
-        });
-        candidateId = candidate.id;
-        const verified = await this.#drive.read(candidate.id);
-        if (!verified.bytes.equals(bytes))
-          throw new Error("Session verification failed");
-
-        const candidates = await this.#drive.list({
+        const existing = await this.#drive.list({
           appProperty: { key: "brainhubKey", value: key },
         });
-        candidates.sort(compareCandidates);
-        const canonical = candidates[0];
-        if (!canonical)
-          throw new Error("Candidate disappeared during reconciliation");
-        const canonicalDirectory = canonical.path.startsWith("inbox/")
-          ? canonical.path.split("/").slice(0, -1).join("/")
-          : `inbox/${original.device}`;
-        const stablePath = `${canonicalDirectory}/${sessionFilename(original)}`;
-        await this.#drive.move(canonical.id, stablePath);
-        for (const loser of candidates.slice(1))
-          await this.#drive.trash(loser.id);
-        this.#state.markUploaded(key, canonical.id, new Date().toISOString());
-        output.uploaded += 1;
-        candidateId = null;
-      } catch (error) {
-        if (candidateId)
-          await this.#drive.trash(candidateId).catch(() => undefined);
-        this.#state.markFailed(key, "UPLOAD_FAILED", true);
-        output.warnings.push({
-          code: "UPLOAD_FAILED",
-          message:
-            error instanceof Error ? error.message : "Unknown upload failure",
+        const winner = existing.sort(compareCandidates)[0];
+        const remoteUpdatedAt = winner?.appProperties.updatedAt ?? "";
+        const remoteContentSha = winner?.appProperties.contentSha256 ?? "";
+        if (
+          winner &&
+          (remoteUpdatedAt > original.updatedAt ||
+            (remoteUpdatedAt === original.updatedAt &&
+              remoteContentSha >= rendered.contentSha256))
+        ) {
+          output.unchanged += 1;
+          continue;
+        }
+
+        output.eligible += 1;
+        if (options.dryRun) continue;
+        this.#state.markPending({
+          conversationKey: key,
+          source: original.source,
+          conversationId: original.conversationId,
+          sourcePath: original.sourcePath,
+          sourceUpdatedAt: original.updatedAt,
+          contentSha256: rendered.contentSha256,
         });
+
+        let candidateId: string | null = null;
+        try {
+          await Promise.all(
+            processedImages.artifacts.map((image) =>
+              ensureImageUploaded(image),
+            ),
+          );
+
+          const properties = {
+            brainhubKey: key,
+            source: original.source,
+            conversationId: original.conversationId,
+            deviceId: this.#deviceId,
+            updatedAt: original.updatedAt,
+            contentSha256: rendered.contentSha256,
+          };
+          const candidate = await this.#drive.put({
+            path: `inbox/${original.device}/.${randomUUID()}.tmp`,
+            bytes,
+            mimeType: "text/markdown",
+            appProperties: properties,
+          });
+          candidateId = candidate.id;
+          const verified = await this.#drive.read(candidate.id);
+          if (!verified.bytes.equals(bytes))
+            throw new Error("Session verification failed");
+
+          const candidates = await this.#drive.list({
+            appProperty: { key: "brainhubKey", value: key },
+          });
+          candidates.sort(compareCandidates);
+          const canonical = candidates[0];
+          if (!canonical)
+            throw new Error("Candidate disappeared during reconciliation");
+          const canonicalDirectory = canonical.path.startsWith("inbox/")
+            ? canonical.path.split("/").slice(0, -1).join("/")
+            : `inbox/${original.device}`;
+          const stablePath = `${canonicalDirectory}/${sessionFilename(original)}`;
+          await this.#drive.move(canonical.id, stablePath);
+          for (const loser of candidates.slice(1))
+            await this.#drive.trash(loser.id);
+          this.#state.markUploaded(key, canonical.id, new Date().toISOString());
+          output.uploaded += 1;
+          candidateId = null;
+        } catch (error) {
+          if (candidateId)
+            await this.#drive.trash(candidateId).catch(() => undefined);
+          this.#state.markFailed(key, "UPLOAD_FAILED", true);
+          output.warnings.push({
+            code: "UPLOAD_FAILED",
+            message:
+              error instanceof Error ? error.message : "Unknown upload failure",
+          });
+        }
       }
-    }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(this.#concurrency, sessions.length) }, () =>
+        worker(),
+      ),
+    );
 
     if (!options.dryRun && output.uploaded > 0) {
       await this.#drive.upsert({

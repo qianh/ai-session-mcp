@@ -17,6 +17,9 @@ name = "macbook"
 root_folder_id = ""
 root_folder_name = "brain-hub"
 oauth_client_file = "~/Downloads/google-oauth-client.json"
+account_email = ""
+account_display_name = ""
+account_permission_id = ""
 
 [capture]
 claude_paths = ["~/.claude/projects"]
@@ -53,10 +56,27 @@ at = "02:00"
 1. 在 Google Cloud 项目启用 Google Drive API。
 2. 创建 Desktop application 类型的 OAuth 客户端，下载 JSON。
 3. 将 JSON 路径写入 `drive.oauth_client_file`。
-4. 执行 `brain-mcp auth login`。授权范围是完整 Drive scope，因为还要读取 Codex Cloud 等其他客户端生成的文件。
-5. 执行 `brain-mcp drive init` 创建或绑定 `brain-hub` 根目录，并保存其 folder ID。
+4. 执行 `brain-mcp auth login`。浏览器会始终显示账号选择页；选中的账号就是当前配置实际使用的 Drive 账号。
+5. 授权完成后，BrainHub 会读取所选账号的 Drive 身份，创建或复用该账号中的 `brain-hub`，再提交凭证和配置。无需额外执行 `drive init`。
 
-refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙串，Linux 存在 Secret Service。代码对所有 Drive ID 操作验证根目录祖先关系，MCP 工具不接受任意 Drive file ID。
+授权范围是完整 Drive scope，因为还要读取 Codex Cloud 等其他客户端生成的文件。OAuth 流程使用 state 校验和 PKCE S256。新凭证在账号身份和根目录绑定成功前只暂存在内存；任何一步失败都会保留旧账号绑定。
+
+检查、切换和退出：
+
+```bash
+brain-mcp auth status --json
+brain-mcp drive status --json
+brain-mcp auth login       # 重新选择账号
+brain-mcp auth logout      # 同时清除凭证、账号身份和 root 绑定
+```
+
+`drive init` 仍可用于旧配置补录，但它现在也会验证并保存实际账号身份。`account_email`、`account_display_name`、`account_permission_id` 和 `root_folder_id` 均由上述命令维护，不应手工复制自其他用户。
+
+OAuth client JSON 标识的是应用，不会把授权固定到创建该 client 的 gcloud 账号。其他用户可以选择自己的 Google 账号并上传到自己的 Drive，前提是 OAuth consent screen 允许该用户：Testing 状态下需加入 test users；面向外部用户发布时需满足 Google 对完整 Drive scope 的验证要求。每台电脑、每份配置都必须自行完成授权，禁止共享 refresh token 或他人的 `root_folder_id`。
+
+refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙串，Linux 存在 Secret Service。凭证按配置文件路径隔离，因此同一电脑上的两个 `--config` 不会互相覆盖；旧版按设备名保存的凭证会在首次读取时迁移。代码对所有 Drive ID 操作验证根目录祖先关系，MCP 工具不接受任意 Drive file ID。
+
+`upload.concurrency` 控制同时处理的会话数，范围为 1-32。大型首次回填可使用 `--skip-index` 先完成 Drive 文件上传；该选项不会改变上传内容，只会返回 `INDEX_SKIPPED` warning 并跳过本轮自动搜索索引刷新。后续不带该选项的上传仍会按默认行为刷新索引。
 
 ## 采集与隐私
 

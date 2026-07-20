@@ -122,8 +122,10 @@ export class PlatformSecretStore implements SecretStore {
           this.#account,
         ]);
       }
-    } catch {
-      // Deleting a missing credential is idempotent.
+    } catch (error) {
+      const exitCode = (error as { exitCode?: unknown }).exitCode;
+      if (this.#platform === "darwin" && exitCode === 44) return;
+      throw error;
     }
   }
 }

@@ -56,6 +56,7 @@ function headerValue(headers: unknown, name: string): string | undefined {
 export class GoogleDrive implements DrivePort {
   readonly #client: drive_v3.Drive;
   readonly #rootFolderId: string;
+  readonly #folderCreations = new Map<string, Promise<string>>();
 
   constructor(options: { client: drive_v3.Drive; rootFolderId: string }) {
     if (!options.rootFolderId) {
@@ -158,28 +159,42 @@ export class GoogleDrive implements DrivePort {
     if (!path) return this.#rootFolderId;
     const normalized = safePath(path);
     let parent = this.#rootFolderId;
+    let currentPath = "";
     for (const segment of normalized.split("/")) {
-      const child = (await this.#children(parent)).find(
-        (file) => file.name === segment && file.mimeType === folderMimeType,
-      );
-      if (child?.id) {
-        parent = child.id;
-        continue;
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      let creation = this.#folderCreations.get(currentPath);
+      if (!creation) {
+        creation = this.#findOrCreateFolder(parent, segment);
+        this.#folderCreations.set(currentPath, creation);
       }
-      const created = await this.#client.files.create({
-        requestBody: {
-          name: segment,
-          mimeType: folderMimeType,
-          parents: [parent],
-        },
-        fields: "id",
-        supportsAllDrives: true,
-      });
-      if (!created.data.id)
-        throw new Error("Google Drive did not return a folder ID");
-      parent = created.data.id;
+      try {
+        parent = await creation;
+      } finally {
+        if (this.#folderCreations.get(currentPath) === creation) {
+          this.#folderCreations.delete(currentPath);
+        }
+      }
     }
     return parent;
+  }
+
+  async #findOrCreateFolder(parent: string, name: string): Promise<string> {
+    const child = (await this.#children(parent)).find(
+      (file) => file.name === name && file.mimeType === folderMimeType,
+    );
+    if (child?.id) return child.id;
+    const created = await this.#client.files.create({
+      requestBody: {
+        name,
+        mimeType: folderMimeType,
+        parents: [parent],
+      },
+      fields: "id",
+      supportsAllDrives: true,
+    });
+    if (!created.data.id)
+      throw new Error("Google Drive did not return a folder ID");
+    return created.data.id;
   }
 
   async #entry(

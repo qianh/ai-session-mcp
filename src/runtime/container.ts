@@ -6,7 +6,10 @@ import { google } from "googleapis";
 
 import { discoverSessions } from "../adapters/index.js";
 import { GoogleOAuth } from "../auth/google-oauth.js";
-import { PlatformSecretStore } from "../auth/platform-secrets.js";
+import {
+  createConfigSecretStore,
+  type ConfigSecretStoreFactory,
+} from "../auth/secret-store-factory.js";
 import type { BrainHubConfig, PlatformPaths } from "../domain/config.js";
 import { BrainHubError } from "../domain/errors.js";
 import type { SessionSource } from "../domain/session.js";
@@ -22,6 +25,13 @@ import type { DeviceState, SessionState, StateStore } from "../state/store.js";
 import { StatusService } from "../status/status-service.js";
 import { UploadLock } from "../upload/lock.js";
 import { UploadService, type UploadOutput } from "../upload/upload-service.js";
+
+export function shouldRefreshSearchIndex(
+  uploaded: number,
+  skipIndex = false,
+): boolean {
+  return uploaded > 0 && !skipIndex;
+}
 
 class VolatileStateStore implements StateStore {
   getOrCreateDevice(name: string): DeviceState {
@@ -55,25 +65,32 @@ export class BrainHubRuntime {
   readonly paths: PlatformPaths;
   readonly homeDir: string;
   readonly platform: NodeJS.Platform;
+  readonly configFile: string;
   readonly executable: string;
   readonly executableArgs: string[];
   #stateStore: SqliteStateStore | null = null;
   #drivePort: DrivePort | null = null;
+  readonly #secretStoreFactory: ConfigSecretStoreFactory;
 
   constructor(options: {
     config: BrainHubConfig;
     paths: PlatformPaths;
+    configFile: string;
     homeDir: string;
     platform: NodeJS.Platform;
     executable: string;
     executableArgs?: string[];
+    secretStoreFactory?: ConfigSecretStoreFactory;
   }) {
     this.config = options.config;
     this.paths = options.paths;
     this.homeDir = options.homeDir;
     this.platform = options.platform;
+    this.configFile = options.configFile;
     this.executable = options.executable;
     this.executableArgs = options.executableArgs ?? [];
+    this.#secretStoreFactory =
+      options.secretStoreFactory ?? createConfigSecretStore;
   }
 
   #state(): SqliteStateStore {
@@ -89,9 +106,10 @@ export class BrainHubRuntime {
         "Run `brain-mcp drive init` first",
       );
     }
-    const secrets = new PlatformSecretStore({
+    const secrets = this.#secretStoreFactory({
       platform: this.platform,
-      account: this.config.device.name,
+      configFile: this.configFile,
+      legacyAccount: this.config.device.name,
     });
     const auth = await new GoogleOAuth(
       this.config.drive.oauthClientFile,
@@ -131,6 +149,7 @@ export class BrainHubRuntime {
     includeSubagents?: boolean;
     dryRun?: boolean;
     backfill?: boolean;
+    skipIndex?: boolean;
   }): Promise<UploadOutput & { adapters: object }> {
     const dryRun = input.dryRun ?? false;
     const state: StateStore = dryRun ? new VolatileStateStore() : this.#state();
@@ -163,6 +182,7 @@ export class BrainHubRuntime {
       drive,
       state,
       deviceId: device.id,
+      concurrency: this.config.upload.concurrency,
       redaction: {
         internalDomains: this.config.capture.internalDomains,
         internalCidrs: this.config.capture.internalCidrs,
@@ -181,7 +201,7 @@ export class BrainHubRuntime {
         output = await service.uploadSessions(discovery.sessions, {
           dryRun: false,
         });
-        if (output.uploaded > 0) {
+        if (shouldRefreshSearchIndex(output.uploaded, input.skipIndex)) {
           try {
             await this.searchService(drive).sync();
           } catch {
@@ -190,6 +210,11 @@ export class BrainHubRuntime {
               message: "Upload succeeded but search index refresh failed",
             });
           }
+        } else if (output.uploaded > 0 && input.skipIndex) {
+          output.warnings.push({
+            code: "INDEX_SKIPPED",
+            message: "Upload succeeded without refreshing the search index",
+          });
         }
       } finally {
         await lock.release();

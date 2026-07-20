@@ -6,10 +6,21 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { Command } from "commander";
-import { google } from "googleapis";
+import { google, type drive_v3 } from "googleapis";
 
-import { GoogleOAuth } from "../auth/google-oauth.js";
-import { PlatformSecretStore } from "../auth/platform-secrets.js";
+import { resolveGoogleAccountStatus } from "../auth/account-status.js";
+import {
+  applyGoogleConnection,
+  clearGoogleConnection,
+  connectGoogleAccount,
+  readGoogleDriveAccount,
+} from "../auth/google-account.js";
+import { GoogleOAuth, type GoogleOAuthClient } from "../auth/google-oauth.js";
+import {
+  createConfigSecretStore,
+  type ConfigSecretStoreFactory,
+} from "../auth/secret-store-factory.js";
+import type { SecretStore } from "../auth/secret-store.js";
 import {
   ClientRegistry,
   mergeClaudeDesktopConfig,
@@ -21,15 +32,19 @@ import {
   type LoadedConfig,
 } from "../domain/config-io.js";
 import type { SessionSource } from "../domain/session.js";
-import { GoogleDrive } from "../drive/google-drive.js";
 import { serveMcp } from "../mcp/server.js";
 import { BrainHubRuntime } from "../runtime/container.js";
 import { SchedulerManager } from "../scheduler/manager.js";
 
-function print(value: unknown, json = false): void {
-  if (json || typeof value !== "string")
-    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-  else process.stdout.write(`${value}\n`);
+export interface CliDependencies {
+  writeOutput?: (value: string) => void;
+  secretStoreFactory?: ConfigSecretStoreFactory;
+  oauthFactory?: (
+    clientFile: string,
+    secrets: SecretStore,
+  ) => Pick<GoogleOAuth, "beginInteractiveAuthorization" | "getClient">;
+  driveFactory?: (auth: GoogleOAuthClient) => drive_v3.Drive;
+  writeConfig?: typeof writeConfig;
 }
 
 function sourceList(value: string): SessionSource[] {
@@ -59,7 +74,28 @@ async function directorySize(path: string): Promise<number> {
   return total;
 }
 
-export async function runCli(argv = process.argv): Promise<void> {
+export async function runCli(
+  argv = process.argv,
+  dependencies: CliDependencies = {},
+): Promise<void> {
+  const writeOutput =
+    dependencies.writeOutput ??
+    ((value: string) => process.stdout.write(value));
+  const secretStoreFactory =
+    dependencies.secretStoreFactory ?? createConfigSecretStore;
+  const oauthFactory =
+    dependencies.oauthFactory ??
+    ((clientFile: string, secrets: SecretStore) =>
+      new GoogleOAuth(clientFile, secrets));
+  const driveFactory =
+    dependencies.driveFactory ??
+    ((auth: GoogleOAuthClient) => google.drive({ version: "v3", auth }));
+  const persistConfig = dependencies.writeConfig ?? writeConfig;
+  const print = (value: unknown, json = false): void => {
+    if (json || typeof value !== "string")
+      writeOutput(`${JSON.stringify(value, null, 2)}\n`);
+    else writeOutput(`${value}\n`);
+  };
   const program = new Command();
   const launch = {
     command: process.execPath,
@@ -86,11 +122,33 @@ export async function runCli(argv = process.argv): Promise<void> {
     return new BrainHubRuntime({
       config: loaded.config,
       paths: loaded.paths,
+      configFile: loaded.configFile,
       homeDir: homedir(),
       platform: process.platform,
       executable: launch.command,
       executableArgs: launch.args,
     });
+  };
+  const secretsFor = (loaded: LoadedConfig): SecretStore =>
+    secretStoreFactory({
+      platform: process.platform,
+      configFile: loaded.configFile,
+      legacyAccount: loaded.config.device.name,
+    });
+  const rollbackAndRethrow = async (
+    staged: Awaited<ReturnType<GoogleOAuth["beginInteractiveAuthorization"]>>,
+    error: unknown,
+  ): Promise<never> => {
+    try {
+      await staged.rollback();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "Google account connection and rollback both failed",
+        { cause: rollbackError },
+      );
+    }
+    throw error;
   };
 
   program
@@ -128,6 +186,7 @@ export async function runCli(argv = process.argv): Promise<void> {
     .description("scan and upload local sessions")
     .option("--dry-run", "plan without Drive or local state writes")
     .option("--backfill", "scan all available history")
+    .option("--skip-index", "upload without refreshing the search index")
     .option("--include-subagents", "include sidechains and subagents")
     .option("--sources <sources>", "comma-separated sources", sourceList)
     .option("--json", "machine-readable output")
@@ -136,6 +195,7 @@ export async function runCli(argv = process.argv): Promise<void> {
         dryRun?: boolean;
         backfill?: boolean;
         includeSubagents?: boolean;
+        skipIndex?: boolean;
         sources?: SessionSource[];
         json?: boolean;
       }) => {
@@ -148,6 +208,9 @@ export async function runCli(argv = process.argv): Promise<void> {
               : {}),
             ...(options.includeSubagents !== undefined
               ? { includeSubagents: options.includeSubagents }
+              : {}),
+            ...(options.skipIndex !== undefined
+              ? { skipIndex: options.skipIndex }
               : {}),
             ...(options.sources ? { sources: options.sources } : {}),
           });
@@ -164,36 +227,88 @@ export async function runCli(argv = process.argv): Promise<void> {
     .option("--json")
     .action(async (options: { json?: boolean }) => {
       const loaded = await load();
-      const secrets = new PlatformSecretStore({
-        platform: process.platform,
-        account: loaded.config.device.name,
-      });
-      await new GoogleOAuth(
+      if (!options.json) {
+        print(
+          "A browser will open. Choose the Google account BrainHub should use.",
+        );
+      }
+      const secrets = secretsFor(loaded);
+      const staged = await oauthFactory(
         loaded.config.drive.oauthClientFile,
         secrets,
-      ).getClient({ interactive: true });
-      print({ authenticated: true }, options.json);
+      ).beginInteractiveAuthorization();
+      try {
+        const connection = await connectGoogleAccount({
+          authClient: staged.client,
+          drive: driveFactory,
+          rootFolderName: loaded.config.drive.rootFolderName,
+        });
+        const nextConfig = applyGoogleConnection(loaded.config, connection);
+        await staged.commit();
+        await persistConfig(loaded.configFile, nextConfig);
+        print(
+          {
+            authenticated: true,
+            account: {
+              email: connection.account.email,
+              displayName: connection.account.displayName,
+            },
+            drive: {
+              rootFolderId: connection.rootFolderId,
+              rootFolderName: nextConfig.drive.rootFolderName,
+            },
+          },
+          options.json,
+        );
+      } catch (error) {
+        await rollbackAndRethrow(staged, error);
+      }
     });
   auth
     .command("status")
     .option("--json")
     .action(async (options: { json?: boolean }) => {
       const loaded = await load();
-      const secrets = new PlatformSecretStore({
-        platform: process.platform,
-        account: loaded.config.device.name,
+      const secrets = secretsFor(loaded);
+      const credential = await secrets.get();
+      const status = await resolveGoogleAccountStatus({
+        config: loaded.config,
+        credential,
+        loadAccount: async () => {
+          const authClient = await oauthFactory(
+            loaded.config.drive.oauthClientFile,
+            secrets,
+          ).getClient({ interactive: false });
+          return readGoogleDriveAccount(driveFactory(authClient));
+        },
       });
-      print({ authenticated: Boolean(await secrets.get()) }, options.json);
+      print(status, options.json);
     });
   auth
     .command("logout")
     .option("--json")
     .action(async (options: { json?: boolean }) => {
       const loaded = await load();
-      await new PlatformSecretStore({
-        platform: process.platform,
-        account: loaded.config.device.name,
-      }).delete();
+      const secrets = secretsFor(loaded);
+      const previousCredential = await secrets.get();
+      await secrets.delete();
+      try {
+        await persistConfig(
+          loaded.configFile,
+          clearGoogleConnection(loaded.config),
+        );
+      } catch (error) {
+        try {
+          if (previousCredential) await secrets.set(previousCredential);
+        } catch (restoreError) {
+          throw new AggregateError(
+            [error, restoreError],
+            "Google logout and credential restore both failed",
+            { cause: restoreError },
+          );
+        }
+        throw error;
+      }
       print({ authenticated: false }, options.json);
     });
 
@@ -205,22 +320,31 @@ export async function runCli(argv = process.argv): Promise<void> {
     .option("--json")
     .action(async (options: { json?: boolean }) => {
       const loaded = await load();
-      const secrets = new PlatformSecretStore({
-        platform: process.platform,
-        account: loaded.config.device.name,
-      });
-      const oauth = await new GoogleOAuth(
+      const secrets = secretsFor(loaded);
+      const oauth = await oauthFactory(
         loaded.config.drive.oauthClientFile,
         secrets,
       ).getClient({ interactive: false });
-      const client = google.drive({ version: "v3", auth: oauth });
-      const rootFolderId = await GoogleDrive.createRoot(
-        client,
-        loaded.config.drive.rootFolderName,
+      const connection = await connectGoogleAccount({
+        authClient: oauth,
+        drive: driveFactory,
+        rootFolderName: loaded.config.drive.rootFolderName,
+      });
+      await persistConfig(
+        loaded.configFile,
+        applyGoogleConnection(loaded.config, connection),
       );
-      loaded.config.drive.rootFolderId = rootFolderId;
-      await writeConfig(loaded.configFile, loaded.config);
-      print({ initialized: true, rootFolderId }, options.json);
+      print(
+        {
+          initialized: true,
+          account: {
+            email: connection.account.email,
+            displayName: connection.account.displayName,
+          },
+          rootFolderId: connection.rootFolderId,
+        },
+        options.json,
+      );
     });
   drive
     .command("status")
@@ -232,6 +356,7 @@ export async function runCli(argv = process.argv): Promise<void> {
         {
           configured: exists,
           rootFolderId: loaded.config.drive.rootFolderId || undefined,
+          accountEmail: loaded.config.drive.accountEmail || undefined,
         },
         options.json,
       );

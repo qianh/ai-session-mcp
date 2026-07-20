@@ -1,5 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, join } from "node:path";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 import TOML from "@iarna/toml";
 
@@ -93,6 +102,25 @@ export interface LoadedConfig {
   configFile: string;
 }
 
+async function resolveConfigWritePath(
+  path: string,
+  visited = new Set<string>(),
+): Promise<string> {
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return path;
+    throw error;
+  }
+  if (!metadata.isSymbolicLink()) return path;
+  const identity = resolve(path);
+  if (visited.has(identity)) throw new Error("Config symlink cycle detected");
+  visited.add(identity);
+  const target = await readlink(path);
+  return resolveConfigWritePath(resolve(dirname(path), target), visited);
+}
+
 export async function loadConfig(options: {
   homeDir: string;
   hostname: string;
@@ -166,6 +194,17 @@ export async function writeConfig(
   config: BrainHubConfig,
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
+  const writePath = await resolveConfigWritePath(path);
+  await mkdir(dirname(writePath), { recursive: true });
   const serializable = mapKeys(config, snakeKey) as TOML.JsonMap;
-  await writeFile(path, TOML.stringify(serializable), { mode: 0o600 });
+  const temporaryPath = `${writePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, TOML.stringify(serializable), {
+      mode: 0o600,
+    });
+    await rename(temporaryPath, writePath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }

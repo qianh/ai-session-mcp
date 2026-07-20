@@ -1,3 +1,7 @@
+import { lstat, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,6 +9,7 @@ import {
   mergeConfigLayers,
   platformPaths,
 } from "../../src/domain/config.js";
+import { loadConfig, writeConfig } from "../../src/domain/config-io.js";
 
 describe("configuration", () => {
   it("uses the frozen macOS paths and defaults", () => {
@@ -25,7 +30,13 @@ describe("configuration", () => {
     expect(config).toMatchObject({
       version: 1,
       device: { name: "macbook" },
-      drive: { rootFolderName: "brain-hub" },
+      drive: {
+        rootFolderId: "",
+        rootFolderName: "brain-hub",
+        accountEmail: "",
+        accountDisplayName: "",
+        accountPermissionId: "",
+      },
       capture: { includeSubagents: false },
       upload: { batchSize: 100, concurrency: 4 },
       search: {
@@ -36,6 +47,40 @@ describe("configuration", () => {
         maxLimit: 50,
       },
       scheduler: { at: "02:00" },
+    });
+  });
+
+  it("loads legacy version 1 TOML without account binding fields", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "brainhub-config-"));
+    const configFile = join(homeDir, "legacy.toml");
+    await writeFile(
+      configFile,
+      [
+        "version = 1",
+        "",
+        "[device]",
+        'name = "legacy-device"',
+        "",
+        "[drive]",
+        'root_folder_id = "legacy-root"',
+        'root_folder_name = "brain-hub"',
+        'oauth_client_file = "oauth.json"',
+      ].join("\n"),
+    );
+
+    const loaded = await loadConfig({
+      homeDir,
+      hostname: "unused",
+      platform: "linux",
+      configFile,
+      env: {},
+    });
+
+    expect(loaded.config.drive).toMatchObject({
+      rootFolderId: "legacy-root",
+      accountEmail: "",
+      accountDisplayName: "",
+      accountPermissionId: "",
     });
   });
 
@@ -70,5 +115,25 @@ describe("configuration", () => {
     expect(() =>
       mergeConfigLayers(defaults, { cli: { scheduler: { at: "25:00" } } }),
     ).toThrow();
+  });
+
+  it("preserves a config symlink while atomically updating its target", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "brainhub-config-link-"));
+    const targetFile = join(homeDir, "managed-config.toml");
+    const configFile = join(homeDir, "config.toml");
+    await writeFile(targetFile, "previous content");
+    await symlink(targetFile, configFile);
+    const config = createDefaultConfig({
+      hostname: "linked-device",
+      homeDir,
+      platform: process.platform,
+    });
+
+    await writeConfig(configFile, config);
+
+    expect((await lstat(configFile)).isSymbolicLink()).toBe(true);
+    expect(await readFile(targetFile, "utf8")).toContain(
+      'name = "linked-device"',
+    );
   });
 });

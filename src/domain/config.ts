@@ -12,6 +12,9 @@ export const ConfigSchema = z
       rootFolderId: z.string(),
       rootFolderName: z.string().min(1),
       oauthClientFile: z.string(),
+      accountEmail: z.string(),
+      accountDisplayName: z.string(),
+      accountPermissionId: z.string(),
     }),
     capture: z.object({
       claudePaths: z.array(z.string().min(1)).min(1),
@@ -122,6 +125,9 @@ export function createDefaultConfig(options: {
       rootFolderId: "",
       rootFolderName: "brain-hub",
       oauthClientFile: "",
+      accountEmail: "",
+      accountDisplayName: "",
+      accountPermissionId: "",
     },
     capture: {
       claudePaths: [join(options.homeDir, ".claude", "projects")],
