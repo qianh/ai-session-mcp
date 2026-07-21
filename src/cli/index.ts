@@ -483,49 +483,80 @@ export async function runCli(
 
   const clients = program.command("clients");
   for (const action of ["install", "uninstall"] as const) {
-    clients
+    const clientCommand = clients
       .command(`${action} [client]`)
       .option("--all")
-      .option("--desktop", "also merge Claude Desktop config")
-      .option("--json")
-      .action(
-        async (
-          client: ClientName | undefined,
-          options: { all?: boolean; desktop?: boolean; json?: boolean },
-        ) => {
-          const registry = new ClientRegistry(launch);
-          const targets: ClientName[] = options.all
-            ? ["claude", "codex", "grok"]
-            : client
-              ? [client]
-              : [];
-          if (targets.length === 0)
-            throw new Error("Specify a client or --all");
-          for (const target of targets) await registry.mutate(target, action);
-          if (action === "install" && options.desktop) {
-            const desktopPath =
-              process.platform === "darwin"
-                ? join(
-                    homedir(),
-                    "Library",
-                    "Application Support",
-                    "Claude",
-                    "claude_desktop_config.json",
-                  )
-                : join(
-                    homedir(),
-                    ".config",
-                    "Claude",
-                    "claude_desktop_config.json",
-                  );
-            await mergeClaudeDesktopConfig(desktopPath, launch);
-          }
-          print(
-            { action, clients: targets, desktop: Boolean(options.desktop) },
-            options.json,
-          );
-        },
+      .option("--desktop", "also merge Claude Desktop config");
+    if (action === "install") {
+      clientCommand.option(
+        "--no-scheduler",
+        "register clients without enabling daily uploads",
       );
+    }
+    clientCommand.option("--json").action(
+      async (
+        client: ClientName | undefined,
+        options: {
+          all?: boolean;
+          desktop?: boolean;
+          scheduler?: boolean;
+          json?: boolean;
+        },
+      ) => {
+        const registry = new ClientRegistry(launch);
+        const targets: ClientName[] = options.all
+          ? ["claude", "codex", "grok"]
+          : client
+            ? [client]
+            : [];
+        if (targets.length === 0) throw new Error("Specify a client or --all");
+        for (const target of targets) await registry.mutate(target, action);
+        if (action === "install" && options.desktop) {
+          const desktopPath =
+            process.platform === "darwin"
+              ? join(
+                  homedir(),
+                  "Library",
+                  "Application Support",
+                  "Claude",
+                  "claude_desktop_config.json",
+                )
+              : join(
+                  homedir(),
+                  ".config",
+                  "Claude",
+                  "claude_desktop_config.json",
+                );
+          await mergeClaudeDesktopConfig(desktopPath, launch);
+        }
+        let scheduler:
+          { installed: true; at: string } | { installed: false } | undefined;
+        if (action === "install") {
+          if (options.scheduler === false) {
+            scheduler = { installed: false };
+          } else {
+            const loaded = await load();
+            const at = loaded.config.scheduler.at;
+            await new SchedulerManager({
+              platform: process.platform,
+              homeDir: homedir(),
+              command: launch.command,
+              args: [...launch.args, "--config", loaded.configFile],
+            }).install(at);
+            scheduler = { installed: true, at };
+          }
+        }
+        print(
+          {
+            action,
+            clients: targets,
+            desktop: Boolean(options.desktop),
+            ...(scheduler ? { scheduler } : {}),
+          },
+          options.json,
+        );
+      },
+    );
   }
   clients
     .command("status")

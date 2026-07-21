@@ -101,9 +101,13 @@ refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙
 
 ## 每日上传任务
 
+`brain-mcp clients install <client>` 和 `brain-mcp clients install --all` 会在 MCP 客户端注册成功后，自动安装 `[scheduler].at` 配置的每日上传任务，默认时间为本地 `02:00`。正常安装流程不需要额外执行 scheduler 命令。
+
+只有明确不希望启用后台上传时，才使用 `brain-mcp clients install <client> --no-scheduler`。`scheduler install|status|uninstall` 保留用于修改、修复或移除独立调度任务。
+
 ### macOS launchd
 
-`brain-mcp scheduler install --at 02:00` 生成用户级 `~/Library/LaunchAgents/com.brainhub.upload.plist`：
+默认安装会生成用户级 `~/Library/LaunchAgents/com.brainhub.upload.plist`：
 
 - `StartCalendarInterval` 在本地时间 02:00 触发；
 - `RunAtLoad=true`，首次安装/用户 LaunchAgent 加载时立即补跑一次；
@@ -113,7 +117,7 @@ refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙
 
 ### Linux systemd user timer
 
-安装后生成 `~/.config/systemd/user/brainhub-upload.service` 和 `.timer`：
+默认安装会生成 `~/.config/systemd/user/brainhub-upload.service` 和 `.timer`：
 
 - service 使用 `Type=oneshot`；
 - timer 使用 `OnCalendar=*-*-* 02:00:00`；

@@ -43,8 +43,9 @@ brain-mcp auth login
 brain-mcp auth status --json
 brain-mcp upload --backfill --json
 brain-mcp clients install --all
-brain-mcp scheduler install --at 02:00
 ```
+
+`clients install` 在成功注册 MCP 客户端后，会自动安装每天一次的会话上传任务；默认时间为本地 `02:00`，也可以通过配置或 `BRAINHUB_SCHEDULE_AT` 修改。正常安装不需要再执行单独的 scheduler 命令。只有明确不希望启用后台上传时才使用 `--no-scheduler`。
 
 `auth login` 会打开 Google 账号选择页。用户在浏览器中选中的账号会成为当前配置的 BrainHub 账号；命令随后读取该账号的 Drive 身份并创建或复用它自己的 `brain-hub` 根目录。重新运行该命令即可切换账号。OAuth token 不会出现在命令输出或 TOML 中。
 
@@ -63,6 +64,8 @@ Claude Desktop 是显式可选项：
 ```bash
 brain-mcp clients install claude --desktop
 ```
+
+调度器的状态检查、修复安装和卸载仍可通过 `brain-mcp scheduler status|install|uninstall` 单独完成。
 
 本仓库实现阶段不会自动执行上述 live 命令。
 
