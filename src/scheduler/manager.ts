@@ -39,43 +39,71 @@ export class SchedulerManager {
     this.#run = options.runner ?? runner;
   }
 
-  async install(at: string): Promise<void> {
+  async install(at: string, syncAt: string): Promise<void> {
     if (this.#platform === "darwin") {
       const directory = join(this.#homeDir, "Library", "LaunchAgents");
       const logs = join(this.#homeDir, "Library", "Logs", "BrainHub");
-      const path = join(directory, "com.brainhub.upload.plist");
+      const jobs = [
+        {
+          path: join(directory, "com.brainhub.upload.plist"),
+          at,
+          job: "upload" as const,
+        },
+        {
+          path: join(directory, "com.brainhub.sync.plist"),
+          at: syncAt,
+          job: "portrait-sync" as const,
+        },
+      ];
       await Promise.all([
         mkdir(directory, { recursive: true }),
         mkdir(logs, { recursive: true }),
       ]);
-      await writeFile(
-        path,
-        renderLaunchAgent({
-          command: this.#command,
-          args: this.#args,
-          at,
-          logDirectory: logs,
-        }),
+      await Promise.all(
+        jobs.map(({ path, ...jobOptions }) =>
+          writeFile(
+            path,
+            renderLaunchAgent({
+              command: this.#command,
+              args: this.#args,
+              logDirectory: logs,
+              ...jobOptions,
+            }),
+          ),
+        ),
       );
       const domain = `gui/${process.getuid?.() ?? 0}`;
-      await this.#run("launchctl", ["bootout", domain, path]).catch(
-        () => undefined,
-      );
-      await this.#run("launchctl", ["bootstrap", domain, path]);
+      for (const { path } of jobs) {
+        await this.#run("launchctl", ["bootout", domain, path]).catch(
+          () => undefined,
+        );
+        await this.#run("launchctl", ["bootstrap", domain, path]);
+      }
       return;
     }
     if (this.#platform !== "linux")
       throw new Error(`Unsupported scheduler platform: ${this.#platform}`);
     const directory = join(this.#homeDir, ".config", "systemd", "user");
     await mkdir(directory, { recursive: true });
-    const units = renderSystemdUnits({
+    const uploadUnits = renderSystemdUnits({
       command: this.#command,
       args: this.#args,
       at,
     });
+    const syncUnits = renderSystemdUnits({
+      command: this.#command,
+      args: this.#args,
+      at: syncAt,
+      job: "portrait-sync",
+    });
     await Promise.all([
-      writeFile(join(directory, "brainhub-upload.service"), units.service),
-      writeFile(join(directory, "brainhub-upload.timer"), units.timer),
+      writeFile(
+        join(directory, "brainhub-upload.service"),
+        uploadUnits.service,
+      ),
+      writeFile(join(directory, "brainhub-upload.timer"), uploadUnits.timer),
+      writeFile(join(directory, "brainhub-sync.service"), syncUnits.service),
+      writeFile(join(directory, "brainhub-sync.timer"), syncUnits.timer),
     ]);
     await this.#run("systemctl", ["--user", "daemon-reload"]);
     await this.#run("systemctl", [
@@ -83,28 +111,35 @@ export class SchedulerManager {
       "enable",
       "--now",
       "brainhub-upload.timer",
+      "brainhub-sync.timer",
     ]);
     await this.#run("systemctl", [
       "--user",
       "start",
       "brainhub-upload.service",
     ]);
+    await this.#run("systemctl", [
+      "--user",
+      "start",
+      "brainhub-sync.service",
+    ]).catch(() => undefined);
   }
 
   async uninstall(): Promise<void> {
     if (this.#platform === "darwin") {
-      const path = join(
-        this.#homeDir,
-        "Library",
-        "LaunchAgents",
-        "com.brainhub.upload.plist",
-      );
-      await this.#run("launchctl", [
-        "bootout",
-        `gui/${process.getuid?.() ?? 0}`,
-        path,
-      ]).catch(() => undefined);
-      await rm(path, { force: true });
+      const directory = join(this.#homeDir, "Library", "LaunchAgents");
+      const paths = [
+        join(directory, "com.brainhub.upload.plist"),
+        join(directory, "com.brainhub.sync.plist"),
+      ];
+      for (const path of paths) {
+        await this.#run("launchctl", [
+          "bootout",
+          `gui/${process.getuid?.() ?? 0}`,
+          path,
+        ]).catch(() => undefined);
+        await rm(path, { force: true });
+      }
       return;
     }
     await this.#run("systemctl", [
@@ -112,34 +147,53 @@ export class SchedulerManager {
       "disable",
       "--now",
       "brainhub-upload.timer",
+      "brainhub-sync.timer",
     ]).catch(() => undefined);
     const directory = join(this.#homeDir, ".config", "systemd", "user");
     await Promise.all([
       rm(join(directory, "brainhub-upload.service"), { force: true }),
       rm(join(directory, "brainhub-upload.timer"), { force: true }),
+      rm(join(directory, "brainhub-sync.service"), { force: true }),
+      rm(join(directory, "brainhub-sync.timer"), { force: true }),
     ]);
     await this.#run("systemctl", ["--user", "daemon-reload"]);
   }
 
-  async status(): Promise<{ installed: boolean; platform: string }> {
-    const path =
+  async status(): Promise<{
+    installed: boolean;
+    upload: { installed: boolean };
+    sync: { installed: boolean };
+    platform: string;
+  }> {
+    const directory =
       this.#platform === "darwin"
-        ? join(
-            this.#homeDir,
-            "Library",
-            "LaunchAgents",
-            "com.brainhub.upload.plist",
-          )
-        : join(
-            this.#homeDir,
-            ".config",
-            "systemd",
-            "user",
-            "brainhub-upload.timer",
-          );
-    const installed = await access(path)
-      .then(() => true)
-      .catch(() => false);
-    return { installed, platform: this.#platform };
+        ? join(this.#homeDir, "Library", "LaunchAgents")
+        : join(this.#homeDir, ".config", "systemd", "user");
+    const uploadPath = join(
+      directory,
+      this.#platform === "darwin"
+        ? "com.brainhub.upload.plist"
+        : "brainhub-upload.timer",
+    );
+    const syncPath = join(
+      directory,
+      this.#platform === "darwin"
+        ? "com.brainhub.sync.plist"
+        : "brainhub-sync.timer",
+    );
+    const [uploadInstalled, syncInstalled] = await Promise.all([
+      access(uploadPath)
+        .then(() => true)
+        .catch(() => false),
+      access(syncPath)
+        .then(() => true)
+        .catch(() => false),
+    ]);
+    return {
+      installed: uploadInstalled && syncInstalled,
+      upload: { installed: uploadInstalled },
+      sync: { installed: syncInstalled },
+      platform: this.#platform,
+    };
   }
 }

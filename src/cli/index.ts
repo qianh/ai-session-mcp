@@ -530,20 +530,23 @@ export async function runCli(
           await mergeClaudeDesktopConfig(desktopPath, launch);
         }
         let scheduler:
-          { installed: true; at: string } | { installed: false } | undefined;
+          | { installed: true; at: string; syncAt: string }
+          | { installed: false }
+          | undefined;
         if (action === "install") {
           if (options.scheduler === false) {
             scheduler = { installed: false };
           } else {
             const loaded = await load();
             const at = loaded.config.scheduler.at;
+            const syncAt = loaded.config.scheduler.syncAt;
             await new SchedulerManager({
               platform: process.platform,
               homeDir: homedir(),
               command: launch.command,
               args: [...launch.args, "--config", loaded.configFile],
-            }).install(at);
-            scheduler = { installed: true, at };
+            }).install(at, syncAt);
+            scheduler = { installed: true, at, syncAt };
           }
         }
         print(
@@ -578,19 +581,23 @@ export async function runCli(
   scheduler
     .command("install")
     .option("--at <time>")
+    .option("--sync-at <time>")
     .option("--json")
-    .action(async (options: { at?: string; json?: boolean }) => {
-      const loaded = await load();
-      const at = options.at ?? loaded.config.scheduler.at;
-      const manager = new SchedulerManager({
-        platform: process.platform,
-        homeDir: homedir(),
-        command: launch.command,
-        args: launch.args,
-      });
-      await manager.install(at);
-      print({ installed: true, at }, options.json);
-    });
+    .action(
+      async (options: { at?: string; syncAt?: string; json?: boolean }) => {
+        const loaded = await load();
+        const at = options.at ?? loaded.config.scheduler.at;
+        const syncAt = options.syncAt ?? loaded.config.scheduler.syncAt;
+        const manager = new SchedulerManager({
+          platform: process.platform,
+          homeDir: homedir(),
+          command: launch.command,
+          args: [...launch.args, "--config", loaded.configFile],
+        });
+        await manager.install(at, syncAt);
+        print({ installed: true, at, syncAt }, options.json);
+      },
+    );
   scheduler
     .command("uninstall")
     .option("--json")

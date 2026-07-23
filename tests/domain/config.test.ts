@@ -46,7 +46,7 @@ describe("configuration", () => {
         defaultLimit: 10,
         maxLimit: 50,
       },
-      scheduler: { at: "02:00" },
+      scheduler: { at: "02:00", syncAt: "06:00" },
     });
   });
 
@@ -114,6 +114,11 @@ describe("configuration", () => {
     ).toThrow();
     expect(() =>
       mergeConfigLayers(defaults, { cli: { scheduler: { at: "25:00" } } }),
+    ).toThrow();
+    expect(() =>
+      mergeConfigLayers(defaults, {
+        cli: { scheduler: { syncAt: "25:00" } },
+      }),
     ).toThrow();
   });
 

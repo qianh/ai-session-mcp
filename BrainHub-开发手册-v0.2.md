@@ -16,7 +16,7 @@
 | C1 | 多终端 | 用户在多台电脑 + 手机间切换,任何模块不得假设"某台特定机器在线" |
 | C2 | 无本地持久化 | 终端设备不保存历史数据;唯一例外是 Obsidian vault 中一份**每期覆盖**的最新蒸馏结果 |
 | C3 | Drive 唯一全量 | Google Drive(5T)是唯一数据主存储,按 5T 上限做长期设计 |
-| C4 | 全自动 | 采集与蒸馏链路无人工介入;仅 Obsidian 更新为低频手动拉取(用户明确接受) |
+| C4 | 全自动 | 采集、蒸馏和 Obsidian 最新发布结果同步均无人工介入;保留手动拉取作为即时刷新入口 |
 | C5 | 暂不删数据 | 本期只做容量水位监控与告警,不做清理/降级 |
 | C6 | 只用订阅制 AI | 不使用任何按量付费的模型 API;AI 能力全部来自订阅产品额度 |
 | C7 | Claude 不进关键路径 | 因封号风险,Claude 系产品不承担任何无人值守职责 |
@@ -41,9 +41,9 @@
                                       │
         ┌──────────────┬──────────────┴──────────────┐
    NotebookLM     网页版 AI(Drive 连接器)    模块一 MCP 拉取
-  (挂2个固定Doc,                          (pull_portrait 手动更新
-   打开时点 sync)                           Obsidian;get_portrait
-                                            对话时直读+顺手刷新)
+  (挂2个固定Doc,                          (每日自动检查并更新;
+   打开时点 sync)                           pull_portrait 可即时更新;
+                                            get_portrait 对话时直读+顺手刷新)
 ```
 
 ### 0.3 Drive 目录规范
@@ -89,7 +89,7 @@ turn_count: N
 
 ### 1.1 产品说明
 
-**目标**:在任意一台电脑上,通过 MCP 完成四件事——上传本机 CLI 会话、检索 Drive 历史沉淀、AI 对话时读取画像、手动拉取蒸馏结果更新 Obsidian。
+**目标**:在任意一台电脑上,通过 MCP 完成四件事——上传本机 CLI 会话、检索 Drive 历史沉淀、AI 对话时读取画像、自动或手动拉取蒸馏结果更新 Obsidian。
 
 **用户故事**
 - 我不做任何操作,本机新产生的 CLI 会话每天自动进入 Drive inbox
@@ -99,7 +99,7 @@ turn_count: N
 
 ### 1.2 技术方案
 
-**形态**:单个 Node.js/TypeScript MCP Server(stdio),注册到 Claude Desktop / Codex 等 MCP 客户端;附带 launchd/systemd 定时器每日调用上传逻辑(上传不依赖 AI 客户端打开)。
+**形态**:单个 Node.js/TypeScript MCP Server(stdio),注册到 Claude Desktop / Codex 等 MCP 客户端;附带 launchd/systemd 定时器每日调用上传和画像同步逻辑(均不依赖 AI 客户端打开)。
 
 **MCP 工具清单**
 
@@ -123,7 +123,7 @@ turn_count: N
 
 **Drive 访问**:内嵌 rclone 或 googleapis SDK,OAuth 凭证存系统钥匙串。上传语义一律 `move`,成功校验后即删本地(C2)。
 
-**Obsidian 写入**:仅 `pull_portrait` / `get_portrait` 写 `<vault>/BrainHub/` 目录,覆盖式,不触碰 vault 其他内容(C8)。
+**Obsidian 写入**:定时同步及 `pull_portrait` / `get_portrait` 仅写 `<vault>/BrainHub/` 目录,内容变化时成对原子覆盖,不触碰 vault 其他内容(C8)。
 
 ### 1.3 验收标准
 
@@ -223,14 +223,14 @@ brain-pipeline/
 
 ### 3.5 消费端衔接
 
-- **Obsidian(拉取式,C8)**:蒸馏结果不主动推送到任何设备;用户在 MCP 客户端说"更新画像"触发 `pull_portrait`,覆盖写 vault 并返回本期 diff。`get_portrait` 在 AI 对话时直读 Drive 最新版并顺手刷新 vault,进一步降低手动频率
+- **Obsidian(拉取式,C8)**:本地定时器每日检查 `publish/`,发现新版后自动覆盖写 vault;用户也可在 MCP 客户端说"更新画像"触发 `pull_portrait` 并查看本期 diff。`get_portrait` 在 AI 对话时直读 Drive 最新版并顺手刷新 vault
 - **NotebookLM**:挂 publish 对应的 2 个固定 Google Doc,打开时点 sync 即最新
 - **网页版 AI**:经 Drive 连接器直接检索 publish/ 与 weekly/
 
 ### 3.6 验收标准
 
 - 连续 7 天全设备关机状态下,cards/weekly/portrait 按时更新,inbox 清空
-- `pull_portrait` 后,Obsidian 内容与 Drive:/publish/ 一致且展示本期 diff
+- 自动同步或 `pull_portrait` 后,Obsidian 内容与 Drive:/publish/ 一致;手动拉取同时展示本期 diff
 - NotebookLM 两个 Doc 点 sync 后为最新
 
 ---
@@ -252,7 +252,7 @@ brain-pipeline/
 | M0(1天) | 3.4 验证清单 | Codex 关机定时写 Drive 成功(或确认走兜底) |
 | M1(1周) | 模块一:Claude Code adapter + upload_sessions | 本机会话自动进 inbox |
 | M2(1周) | 模块三 daily-distill(ingest+L1) | cards/ 每日增长 |
-| M3(1周) | weekly-distill + publish + pull_portrait | 说"更新画像"后 Obsidian 见到最新版及 diff |
+| M3(1周) | weekly-distill + publish + 自动同步 + pull_portrait | Obsidian 自动见到最新版;说"更新画像"可立即刷新并查看 diff |
 | M4(2周) | 模块二插件(先 ChatGPT+Claude 两站) | 网页会话入库 |
 | M5 | search_sessions、hub_status、模块四告警、其余 adapter 与站点 | — |
 

@@ -45,7 +45,7 @@ brain-mcp upload --backfill --json
 brain-mcp clients install --all
 ```
 
-`clients install` 在成功注册 MCP 客户端后，会自动安装每天一次的会话上传任务；默认时间为本地 `02:00`，也可以通过配置或 `BRAINHUB_SCHEDULE_AT` 修改。正常安装不需要再执行单独的 scheduler 命令。只有明确不希望启用后台上传时才使用 `--no-scheduler`。
+`clients install` 在成功注册 MCP 客户端后，会自动安装两份本地任务：默认 `02:00` 上传会话，默认 `06:00` 检查 Drive 发布结果并将新版画像和周报同步到 Obsidian。时间可通过配置或 `BRAINHUB_SCHEDULE_AT`、`BRAINHUB_SYNC_AT` 修改。正常安装不需要再执行单独的 scheduler 命令；`--no-scheduler` 会同时跳过上传和同步任务。
 
 `auth login` 会打开 Google 账号选择页。用户在浏览器中选中的账号会成为当前配置的 BrainHub 账号；命令随后读取该账号的 Drive 身份并创建或复用它自己的 `brain-hub` 根目录。重新运行该命令即可切换账号。OAuth token 不会出现在命令输出或 TOML 中。
 

@@ -84,7 +84,10 @@ function environmentLayer(env: NodeJS.ProcessEnv): ConfigLayer {
       batchSize: numberEnv(env.BRAINHUB_UPLOAD_BATCH_SIZE),
       concurrency: numberEnv(env.BRAINHUB_UPLOAD_CONCURRENCY),
     },
-    scheduler: { at: env.BRAINHUB_SCHEDULE_AT },
+    scheduler: {
+      at: env.BRAINHUB_SCHEDULE_AT,
+      syncAt: env.BRAINHUB_SYNC_AT,
+    },
   }) as ConfigLayer;
 }
 

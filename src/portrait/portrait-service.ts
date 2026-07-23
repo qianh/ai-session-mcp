@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { BrainHubError } from "../domain/errors.js";
@@ -15,7 +15,16 @@ export interface PortraitOutput {
   localPath?: string;
   diff?: string | undefined;
   weeklyRefreshed?: boolean;
+  unchanged?: boolean;
   warnings: Array<{ code: string; message: string }>;
+}
+
+async function fileMatches(path: string, content: Buffer): Promise<boolean> {
+  try {
+    return (await readFile(path)).equals(content);
+  } catch {
+    return false;
+  }
 }
 
 async function atomicWrite(path: string, content: Buffer): Promise<void> {
@@ -204,15 +213,32 @@ export class PortraitService {
         warnings,
       };
     }
+    const portraitPath = join(directory, "portrait.md");
+    const weeklyPath = join(directory, "weekly-latest.md");
+    const unchanged = await Promise.all([
+      fileMatches(portraitPath, portrait.bytes),
+      fileMatches(weeklyPath, weekly.bytes),
+    ]);
+    if (unchanged.every(Boolean)) {
+      return {
+        portrait: portrait.text,
+        localRefreshed: false,
+        localPath: portraitPath,
+        weeklyRefreshed: false,
+        unchanged: true,
+        diff: diffSection(portrait.text),
+        warnings,
+      };
+    }
     try {
       await atomicWritePair([
-        { path: join(directory, "portrait.md"), content: portrait.bytes },
-        { path: join(directory, "weekly-latest.md"), content: weekly.bytes },
+        { path: portraitPath, content: portrait.bytes },
+        { path: weeklyPath, content: weekly.bytes },
       ]);
       return {
         portrait: portrait.text,
         localRefreshed: true,
-        localPath: join(directory, "portrait.md"),
+        localPath: portraitPath,
         weeklyRefreshed: true,
         diff: diffSection(portrait.text),
         warnings,

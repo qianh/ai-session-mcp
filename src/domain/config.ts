@@ -38,7 +38,7 @@ export const ConfigSchema = z
       defaultLimit: z.int().positive(),
       maxLimit: z.int().positive().max(50),
     }),
-    scheduler: z.object({ at: ScheduleSchema }),
+    scheduler: z.object({ at: ScheduleSchema, syncAt: ScheduleSchema }),
   })
   .superRefine((config, context) => {
     if (config.search.defaultLimit > config.search.maxLimit) {
@@ -148,7 +148,7 @@ export function createDefaultConfig(options: {
       defaultLimit: 10,
       maxLimit: 50,
     },
-    scheduler: { at: "02:00" },
+    scheduler: { at: "02:00", syncAt: "06:00" },
   });
 }
 

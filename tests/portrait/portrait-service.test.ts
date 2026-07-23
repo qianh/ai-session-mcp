@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -171,5 +178,51 @@ describe("portrait publishing", () => {
     expect(await readFile(join(fallback, "portrait.md"), "utf8")).toBe(
       "# Previous portrait\n",
     );
+  });
+
+  it("does not rewrite local documents that already match Drive", async () => {
+    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
+    const fallback = join(home, "publish");
+    const portraitPath = join(fallback, "portrait.md");
+    const weeklyPath = join(fallback, "weekly-latest.md");
+    await mkdir(fallback, { recursive: true });
+    await Promise.all([
+      writeFile(portraitPath, "# Current portrait\n"),
+      writeFile(weeklyPath, "# Current weekly\n"),
+    ]);
+    const oldTimestamp = new Date("2026-01-01T00:00:00.000Z");
+    await Promise.all([
+      utimes(portraitPath, oldTimestamp, oldTimestamp),
+      utimes(weeklyPath, oldTimestamp, oldTimestamp),
+    ]);
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "publish/portrait.md",
+      bytes: Buffer.from("# Current portrait\n"),
+      mimeType: "text/markdown",
+    });
+    await drive.put({
+      path: "publish/weekly-latest.md",
+      bytes: Buffer.from("# Current weekly\n"),
+      mimeType: "text/markdown",
+    });
+    const service = new PortraitService({
+      drive,
+      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
+    });
+
+    const result = await service.pullPortrait();
+
+    expect(result).toMatchObject({
+      unchanged: true,
+      localRefreshed: false,
+      weeklyRefreshed: false,
+    });
+    await expect(stat(portraitPath)).resolves.toMatchObject({
+      mtime: oldTimestamp,
+    });
+    await expect(stat(weeklyPath)).resolves.toMatchObject({
+      mtime: oldTimestamp,
+    });
   });
 });

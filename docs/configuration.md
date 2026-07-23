@@ -47,9 +47,10 @@ max_limit = 50
 
 [scheduler]
 at = "02:00"
+sync_at = "06:00"
 ```
 
-常用环境变量包括 `BRAINHUB_CONFIG`、`BRAINHUB_DRIVE_ROOT_ID`、`BRAINHUB_GOOGLE_OAUTH_CLIENT_FILE`、`BRAINHUB_PUBLISH_FALLBACK_PATH`、`BRAINHUB_CLAUDE_PATHS`、`BRAINHUB_CODEX_PATHS`、`BRAINHUB_GROK_PATHS`、`BRAINHUB_INCLUDE_SUBAGENTS`、`BRAINHUB_MODEL_CACHE` 和 `BRAINHUB_SCHEDULE_AT`。多路径值使用操作系统路径分隔符。
+常用环境变量包括 `BRAINHUB_CONFIG`、`BRAINHUB_DRIVE_ROOT_ID`、`BRAINHUB_GOOGLE_OAUTH_CLIENT_FILE`、`BRAINHUB_PUBLISH_FALLBACK_PATH`、`BRAINHUB_CLAUDE_PATHS`、`BRAINHUB_CODEX_PATHS`、`BRAINHUB_GROK_PATHS`、`BRAINHUB_INCLUDE_SUBAGENTS`、`BRAINHUB_MODEL_CACHE`、`BRAINHUB_SCHEDULE_AT` 和 `BRAINHUB_SYNC_AT`。多路径值使用操作系统路径分隔符。
 
 ## Google OAuth 与 Drive
 
@@ -96,31 +97,32 @@ refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙
 
 - `get_portrait`：读取 Drive `publish/portrait.md` 并尝试原子刷新本地画像；没有可写目录时仍返回 Drive 内容和警告。
 - `pull_portrait`：原子覆盖 `portrait.md` 与 `weekly-latest.md`，并返回 `变更 Diff`、`本期变化` 或 `Diff` 章节。
+- 后台同步：每天在 `[scheduler].sync_at` 检查同一对发布文件；本地内容相同时不重写，Drive 缺文件或写入失败时保留旧版本。
 
 不会安装 Obsidian 同步插件，也不会触碰 `BrainHub/` 之外的 vault 内容。
 
-## 每日上传任务
+## 本地后台任务
 
-`brain-mcp clients install <client>` 和 `brain-mcp clients install --all` 会在 MCP 客户端注册成功后，自动安装 `[scheduler].at` 配置的每日上传任务，默认时间为本地 `02:00`。正常安装流程不需要额外执行 scheduler 命令。
+`brain-mcp clients install <client>` 和 `brain-mcp clients install --all` 会在 MCP 客户端注册成功后自动安装两份任务：`[scheduler].at` 控制每日会话上传，默认 `02:00`；`[scheduler].sync_at` 控制每日画像同步，默认 `06:00`。同步时间应晚于云端发布窗口。
 
-只有明确不希望启用后台上传时，才使用 `brain-mcp clients install <client> --no-scheduler`。`scheduler install|status|uninstall` 保留用于修改、修复或移除独立调度任务。
+只有明确不希望启用任何后台任务时，才使用 `brain-mcp clients install <client> --no-scheduler`。`scheduler install|status|uninstall` 保留用于修改、修复或同时移除两份任务。也可使用 `brain-mcp scheduler install --at 02:00 --sync-at 06:00` 修复安装。
 
 ### macOS launchd
 
-默认安装会生成用户级 `~/Library/LaunchAgents/com.brainhub.upload.plist`：
+默认安装会生成用户级 `~/Library/LaunchAgents/com.brainhub.upload.plist` 和 `com.brainhub.sync.plist`：
 
-- `StartCalendarInterval` 在本地时间 02:00 触发；
+- 两份任务分别在本地时间 02:00 和 06:00 触发；
 - `RunAtLoad=true`，首次安装/用户 LaunchAgent 加载时立即补跑一次；
 - 电脑在计划时间睡眠时，launchd 会在唤醒后处理错过的日历触发；
 - 以当前登录用户运行，因此可以访问该用户的 Keychain、会话目录和配置；
-- stdout/stderr 写入 `~/Library/Logs/BrainHub/`，上传命令只输出聚合 JSON，不输出会话正文。
+- stdout/stderr 分别写入 `~/Library/Logs/BrainHub/upload*.log` 和 `sync*.log`；上传命令只输出聚合 JSON，不输出会话正文。
 
 ### Linux systemd user timer
 
-默认安装会生成 `~/.config/systemd/user/brainhub-upload.service` 和 `.timer`：
+默认安装会生成 `brainhub-upload.service/.timer` 和 `brainhub-sync.service/.timer`：
 
 - service 使用 `Type=oneshot`；
-- timer 使用 `OnCalendar=*-*-* 02:00:00`；
+- 两个 timer 默认分别使用 `OnCalendar=*-*-* 02:00:00` 和 `06:00:00`；
 - `Persistent=true`，关机或睡眠错过后，用户 manager 下次启动时补跑；
 - 安装器显式启动一次 service，不等待第二天；
 - 使用 `systemctl --user`，不需要 root。
@@ -134,7 +136,7 @@ brain-mcp scheduler status --json
 brain-mcp scheduler uninstall --json
 ```
 
-调度器与手动/MCP 上传共享进程锁；并发触发时第二个任务返回 `UPLOAD_BUSY`，不会重叠写 Drive。
+上传调度器与手动/MCP 上传共享进程锁；并发触发时第二个上传返回 `UPLOAD_BUSY`，不会重叠写 Drive。画像同步使用成对原子写入，失败时不会留下半套发布文件。
 
 ## MCP 客户端
 

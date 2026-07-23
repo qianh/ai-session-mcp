@@ -34,4 +34,37 @@ describe("scheduler templates", () => {
     expect(units.timer).toContain("OnCalendar=*-*-* 02:00:00");
     expect(units.timer).toContain("Persistent=true");
   });
+
+  it("renders an independent daily portrait sync launch agent", () => {
+    const plist = renderLaunchAgent({
+      command: "/usr/local/bin/node",
+      args: ["/opt/brain hub/dist/cli/index.js"],
+      at: "06:00",
+      logDirectory: "/tmp/logs",
+      job: "portrait-sync",
+    });
+
+    expect(plist).toContain(
+      "<key>Label</key><string>com.brainhub.sync</string>",
+    );
+    expect(plist).toContain("<key>Hour</key><integer>6</integer>");
+    expect(plist).toContain("<string>portrait</string>");
+    expect(plist).toContain("<string>pull</string>");
+    expect(plist).toContain("/tmp/logs/sync.log");
+  });
+
+  it("renders an independent persistent portrait sync systemd timer", () => {
+    const units = renderSystemdUnits({
+      command: "/usr/local/bin/node",
+      args: ["/opt/brain hub/dist/cli/index.js"],
+      at: "06:00",
+      job: "portrait-sync",
+    });
+
+    expect(units.service).toContain(
+      'ExecStart=/usr/local/bin/node "/opt/brain hub/dist/cli/index.js" portrait pull --json',
+    );
+    expect(units.timer).toContain("OnCalendar=*-*-* 06:00:00");
+    expect(units.timer).toContain("Unit=brainhub-sync.service");
+  });
 });
