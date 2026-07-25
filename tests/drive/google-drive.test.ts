@@ -62,6 +62,85 @@ function createConcurrentDriveClient() {
 }
 
 describe("Google Drive boundary", () => {
+  it("reads a fixed file relative to the resolved My Drive root", async () => {
+    const profile = {
+      id: "profile-1",
+      name: "Digital_Twin_Profile.md",
+      mimeType: "text/markdown",
+      parents: ["my-drive-root"],
+      size: "15",
+      modifiedTime: "2026-07-25T00:00:00.000Z",
+      appProperties: {},
+      version: "1",
+      trashed: false,
+    };
+    const listedParents: string[] = [];
+    const client = {
+      files: {
+        list: async (request: { q?: string }) => {
+          listedParents.push(request.q ?? "");
+          return { data: { files: [profile] } };
+        },
+        get: async (request: { fileId?: string; alt?: string }) => {
+          if (request.fileId === "root") {
+            return { data: { id: "my-drive-root" } };
+          }
+          if (request.alt === "media") {
+            return { data: Buffer.from("# Digital Twin\n") };
+          }
+          return { data: profile, headers: { etag: "profile-etag" } };
+        },
+      },
+    };
+
+    const drive = await GoogleDrive.openMyDrive(client as never);
+    const result = await drive.readPath("Digital_Twin_Profile.md");
+
+    expect(result?.bytes.toString("utf8")).toBe("# Digital Twin\n");
+    expect(listedParents).toContain(
+      "'my-drive-root' in parents and trashed = false",
+    );
+  });
+
+  it("exports a Google Docs profile as Markdown", async () => {
+    const profile = {
+      id: "profile-doc",
+      name: "Digital_Twin_Profile.md",
+      mimeType: "application/vnd.google-apps.document",
+      parents: ["my-drive-root"],
+      size: "0",
+      modifiedTime: "2026-07-25T00:00:00.000Z",
+      appProperties: {},
+      version: "1",
+      trashed: false,
+    };
+    let exportedMimeType: string | undefined;
+    const client = {
+      files: {
+        list: async () => ({ data: { files: [profile] } }),
+        get: async (request: { fileId?: string; alt?: string }) => {
+          if (request.fileId === "root") {
+            return { data: { id: "my-drive-root" } };
+          }
+          if (request.alt === "media") {
+            throw new Error("Google Docs cannot use media download");
+          }
+          return { data: profile, headers: { etag: "profile-etag" } };
+        },
+        export: async (request: { mimeType?: string }) => {
+          exportedMimeType = request.mimeType;
+          return { data: Buffer.from("# Exported Digital Twin\n") };
+        },
+      },
+    };
+
+    const drive = await GoogleDrive.openMyDrive(client as never);
+    const result = await drive.readPath("Digital_Twin_Profile.md");
+
+    expect(exportedMimeType).toBe("text/markdown");
+    expect(result?.bytes.toString("utf8")).toBe("# Exported Digital Twin\n");
+  });
+
   it("reuses an existing named root folder", async () => {
     let createCalls = 0;
     const client = {

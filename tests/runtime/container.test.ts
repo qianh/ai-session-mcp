@@ -18,6 +18,7 @@ async function runtimeFixture(
   options: {
     configFile?: string;
     secretStoreFactory?: (options: ConfigSecretStoreOptions) => SecretStore;
+    driveFactory?: () => object;
   } = {},
 ) {
   const homeDir = await mkdtemp(join(tmpdir(), "brainhub-runtime-"));
@@ -42,11 +43,80 @@ async function runtimeFixture(
       ...(options.secretStoreFactory
         ? { secretStoreFactory: options.secretStoreFactory }
         : {}),
+      ...(options.driveFactory
+        ? { driveFactory: options.driveFactory as never }
+        : {}),
     }),
   };
 }
 
 describe("BrainHub runtime", () => {
+  it("reads the portrait from the Digital Twin file in My Drive", async () => {
+    const profile = {
+      id: "profile-1",
+      name: "Digital_Twin_Profile.md",
+      mimeType: "text/markdown",
+      parents: ["my-drive-root"],
+      size: "15",
+      modifiedTime: "2026-07-25T00:00:00.000Z",
+      appProperties: {},
+      version: "1",
+      trashed: false,
+    };
+    const client = {
+      files: {
+        list: async (request: { q?: string }) => ({
+          data: {
+            files: request.q?.includes("'my-drive-root' in parents")
+              ? [profile]
+              : [],
+          },
+        }),
+        get: async (request: { fileId?: string; alt?: string }) => {
+          if (request.fileId === "root") {
+            return { data: { id: "my-drive-root" } };
+          }
+          if (request.alt === "media") {
+            return { data: Buffer.from("# Runtime Digital Twin\n") };
+          }
+          return { data: profile, headers: { etag: "profile-etag" } };
+        },
+      },
+    };
+    const fixture = await runtimeFixture({
+      secretStoreFactory: () => ({
+        get: async () =>
+          JSON.stringify({
+            access_token: "access-token",
+            refresh_token: "refresh-token",
+            expiry_date: Date.now() + 60 * 60_000,
+          }),
+        set: async () => undefined,
+        delete: async () => undefined,
+      }),
+      driveFactory: () => client,
+    });
+    const oauthClientFile = join(fixture.homeDir, "oauth.json");
+    await writeFile(
+      oauthClientFile,
+      JSON.stringify({
+        installed: {
+          client_id: "client-id",
+          client_secret: "client-secret",
+          redirect_uris: ["http://127.0.0.1"],
+        },
+      }),
+    );
+    fixture.config.drive.rootFolderId = "brain-hub-root";
+    fixture.config.drive.oauthClientFile = oauthClientFile;
+    fixture.config.publish.fallbackPath = join(fixture.homeDir, "publish");
+
+    const result = await fixture.runtime.getPortrait();
+
+    expect(result.portrait).toBe("# Runtime Digital Twin\n");
+    fixture.runtime.close();
+  });
+
   it("allows a backfill to skip automatic search indexing", () => {
     expect(shouldRefreshSearchIndex(10, false)).toBe(true);
     expect(shouldRefreshSearchIndex(10, true)).toBe(false);

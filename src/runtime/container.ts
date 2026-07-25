@@ -2,10 +2,10 @@ import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 
-import { google } from "googleapis";
+import { google, type drive_v3 } from "googleapis";
 
 import { discoverSessions } from "../adapters/index.js";
-import { GoogleOAuth } from "../auth/google-oauth.js";
+import { GoogleOAuth, type GoogleOAuthClient } from "../auth/google-oauth.js";
 import {
   createConfigSecretStore,
   type ConfigSecretStoreFactory,
@@ -16,7 +16,10 @@ import type { SessionSource } from "../domain/session.js";
 import type { DrivePort } from "../drive/drive-port.js";
 import { GoogleDrive } from "../drive/google-drive.js";
 import { MemoryDrive } from "../drive/memory-drive.js";
-import { PortraitService } from "../portrait/portrait-service.js";
+import {
+  DIGITAL_TWIN_PROFILE_PATH,
+  PortraitService,
+} from "../portrait/portrait-service.js";
 import { SchedulerManager } from "../scheduler/manager.js";
 import { E5Embedder } from "../search/e5-embedder.js";
 import { SearchService } from "../search/search-service.js";
@@ -70,7 +73,10 @@ export class BrainHubRuntime {
   readonly executableArgs: string[];
   #stateStore: SqliteStateStore | null = null;
   #drivePort: DrivePort | null = null;
+  #myDrivePort: DrivePort | null = null;
+  #googleDriveClient: drive_v3.Drive | null = null;
   readonly #secretStoreFactory: ConfigSecretStoreFactory;
+  readonly #driveFactory: (auth: GoogleOAuthClient) => drive_v3.Drive;
 
   constructor(options: {
     config: BrainHubConfig;
@@ -81,6 +87,7 @@ export class BrainHubRuntime {
     executable: string;
     executableArgs?: string[];
     secretStoreFactory?: ConfigSecretStoreFactory;
+    driveFactory?: (auth: GoogleOAuthClient) => drive_v3.Drive;
   }) {
     this.config = options.config;
     this.paths = options.paths;
@@ -91,6 +98,8 @@ export class BrainHubRuntime {
     this.executableArgs = options.executableArgs ?? [];
     this.#secretStoreFactory =
       options.secretStoreFactory ?? createConfigSecretStore;
+    this.#driveFactory =
+      options.driveFactory ?? ((auth) => google.drive({ version: "v3", auth }));
   }
 
   #state(): SqliteStateStore {
@@ -115,12 +124,26 @@ export class BrainHubRuntime {
       this.config.drive.oauthClientFile,
       secrets,
     ).getClient({ interactive });
-    const client = google.drive({ version: "v3", auth });
+    const client = this.#driveFactory(auth);
+    this.#googleDriveClient = client;
     this.#drivePort = new GoogleDrive({
       client,
       rootFolderId: this.config.drive.rootFolderId,
     });
     return this.#drivePort;
+  }
+
+  async #myDrive(): Promise<DrivePort> {
+    if (this.#myDrivePort) return this.#myDrivePort;
+    await this.drive(false);
+    if (!this.#googleDriveClient) {
+      throw new BrainHubError(
+        "DRIVE_ROOT_REQUIRED",
+        "Google Drive client is not initialized",
+      );
+    }
+    this.#myDrivePort = await GoogleDrive.openMyDrive(this.#googleDriveClient);
+    return this.#myDrivePort;
   }
 
   async discover(input: {
@@ -270,6 +293,10 @@ export class BrainHubRuntime {
   async portraitService(): Promise<PortraitService> {
     return new PortraitService({
       drive: await this.drive(false),
+      portraitSource: {
+        drive: await this.#myDrive(),
+        path: DIGITAL_TWIN_PROFILE_PATH,
+      },
       publish: {
         platform: this.platform,
         homeDir: this.homeDir,

@@ -8,8 +8,8 @@ BrainHub MCP 是一个本地 Node.js/TypeScript stdio MCP 服务。它只读取 
 
 - `upload_sessions`：全量回填或增量上传，图片按 SHA-256 去重并转为 WebP。
 - `search_sessions`：依次检索 `cards`、`sessions`、`inbox`，结合关键词和本地 E5 向量排序。
-- `get_portrait`：始终读取 Drive 最新画像，并尝试刷新本地 `portrait.md`。
-- `pull_portrait`：覆盖写入 `portrait.md` 和 `weekly-latest.md`，返回本期 Diff。
+- `get_portrait`：始终读取 My Drive 根目录的 `Digital_Twin_Profile.md`，并尝试刷新本地 `portrait.md`。
+- `pull_portrait`：将数字分身同步为本地 `portrait.md`，同时拉取 BrainHub 最新周报；周报尚未发布时仍会独立更新画像。
 - `hub_status`：汇总 Drive 配额、inbox 积压、蒸馏状态、容量和本地适配器/调度状态。
 
 ## 安装与验证

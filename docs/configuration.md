@@ -95,9 +95,12 @@ refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙
 
 每次拉取先读取 Obsidian 的 vault 注册表，选择当前打开或最近使用且可写的 vault，写入 `<vault>/BrainHub/`。只有未发现可写 vault 时，才使用 `publish.fallback_path`。
 
-- `get_portrait`：读取 Drive `publish/portrait.md` 并尝试原子刷新本地画像；没有可写目录时仍返回 Drive 内容和警告。
-- `pull_portrait`：原子覆盖 `portrait.md` 与 `weekly-latest.md`，并返回 `变更 Diff`、`本期变化` 或 `Diff` 章节。
-- 后台同步：每天在 `[scheduler].sync_at` 检查同一对发布文件；本地内容相同时不重写，Drive 缺文件或写入失败时保留旧版本。
+- `get_portrait`：读取 My Drive 根目录 `Digital_Twin_Profile.md`，并尝试原子刷新为本地 `portrait.md`；没有可写目录时仍返回 Drive 内容和警告。
+- `pull_portrait`：同步上述数字分身，并从 `brain-hub/publish/weekly-latest.md` 拉取最新周报。两者都存在时成对原子覆盖；周报尚未发布时只原子更新画像并返回警告。
+- 后台同步：每天在 `[scheduler].sync_at` 检查数字分身和周报；本地内容相同时不重写，Drive 源缺失或写入失败时保留对应旧版本。
+
+画像读取使用单独的 My Drive 根边界，只按固定名称解析 `Digital_Twin_Profile.md`；MCP 工具仍不接受任意 Drive 路径或文件 ID。本地文件名继续使用 `portrait.md`，以兼容现有 Obsidian 链接和 MCP 返回结构。
+如果该文件实际是同名 Google Docs 文档，读取时通过 Drive API 原生导出为 `text/markdown`；真正的 Markdown 文件仍使用媒体下载。
 
 不会安装 Obsidian 同步插件，也不会触碰 `BrainHub/` 之外的 vault 内容。
 

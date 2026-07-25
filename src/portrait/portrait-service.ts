@@ -9,6 +9,8 @@ import {
   type PublishDiscoveryOptions,
 } from "./obsidian.js";
 
+export const DIGITAL_TWIN_PROFILE_PATH = "Digital_Twin_Profile.md";
+
 export interface PortraitOutput {
   portrait: string;
   localRefreshed: boolean;
@@ -123,19 +125,30 @@ function diffSection(markdown: string): string | undefined {
 
 export class PortraitService {
   readonly #drive: DrivePort;
+  readonly #portraitSource: { drive: DrivePort; path: string };
   readonly #publish: PublishDiscoveryOptions;
 
-  constructor(options: { drive: DrivePort; publish: PublishDiscoveryOptions }) {
+  constructor(options: {
+    drive: DrivePort;
+    portraitSource?: { drive: DrivePort; path: string };
+    publish: PublishDiscoveryOptions;
+  }) {
     this.#drive = options.drive;
+    this.#portraitSource = options.portraitSource ?? {
+      drive: options.drive,
+      path: "publish/portrait.md",
+    };
     this.#publish = options.publish;
   }
 
   async #readPortrait(): Promise<{ bytes: Buffer; text: string }> {
-    const object = await this.#drive.readPath("publish/portrait.md");
+    const object = await this.#portraitSource.drive.readPath(
+      this.#portraitSource.path,
+    );
     if (!object)
       throw new BrainHubError(
         "SOURCE_UNAVAILABLE",
-        "Drive portrait has not been published yet",
+        `Drive portrait source ${this.#portraitSource.path} is not available`,
       );
     return { bytes: object.bytes, text: object.bytes.toString("utf8") };
   }
@@ -190,15 +203,6 @@ export class PortraitService {
         code: "SOURCE_UNAVAILABLE",
         message: "Drive weekly-latest.md is not available",
       });
-    if (!weekly) {
-      return {
-        portrait: portrait.text,
-        localRefreshed: false,
-        weeklyRefreshed: false,
-        diff: diffSection(portrait.text),
-        warnings,
-      };
-    }
     const directory = await discoverPublishDirectory(this.#publish);
     if (!directory) {
       warnings.push({
@@ -215,6 +219,42 @@ export class PortraitService {
     }
     const portraitPath = join(directory, "portrait.md");
     const weeklyPath = join(directory, "weekly-latest.md");
+    if (!weekly) {
+      if (await fileMatches(portraitPath, portrait.bytes)) {
+        return {
+          portrait: portrait.text,
+          localRefreshed: false,
+          localPath: portraitPath,
+          weeklyRefreshed: false,
+          unchanged: true,
+          diff: diffSection(portrait.text),
+          warnings,
+        };
+      }
+      try {
+        await atomicWrite(portraitPath, portrait.bytes);
+        return {
+          portrait: portrait.text,
+          localRefreshed: true,
+          localPath: portraitPath,
+          weeklyRefreshed: false,
+          diff: diffSection(portrait.text),
+          warnings,
+        };
+      } catch {
+        warnings.push({
+          code: "PUBLISH_WRITE_FAILED",
+          message: "Atomic local portrait publish failed",
+        });
+        return {
+          portrait: portrait.text,
+          localRefreshed: false,
+          weeklyRefreshed: false,
+          diff: diffSection(portrait.text),
+          warnings,
+        };
+      }
+    }
     const unchanged = await Promise.all([
       fileMatches(portraitPath, portrait.bytes),
       fileMatches(weeklyPath, weekly.bytes),

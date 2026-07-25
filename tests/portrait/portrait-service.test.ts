@@ -16,6 +16,40 @@ import { discoverPublishDirectory } from "../../src/portrait/obsidian.js";
 import { PortraitService } from "../../src/portrait/portrait-service.js";
 
 describe("portrait publishing", () => {
+  it("uses the My Drive digital twin file as the portrait source", async () => {
+    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
+    const fallback = join(home, "publish");
+    const brainHubDrive = new MemoryDrive();
+    const myDrive = new MemoryDrive();
+    await Promise.all([
+      brainHubDrive.put({
+        path: "publish/portrait.md",
+        bytes: Buffer.from("# Stale BrainHub portrait\n"),
+        mimeType: "text/markdown",
+      }),
+      myDrive.put({
+        path: "Digital_Twin_Profile.md",
+        bytes: Buffer.from("# Authoritative Digital Twin\n"),
+        mimeType: "text/markdown",
+      }),
+    ]);
+    const service = new PortraitService({
+      drive: brainHubDrive,
+      portraitSource: {
+        drive: myDrive,
+        path: "Digital_Twin_Profile.md",
+      },
+      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
+    });
+
+    const result = await service.getPortrait();
+
+    expect(result.portrait).toBe("# Authoritative Digital Twin\n");
+    await expect(readFile(join(fallback, "portrait.md"), "utf8")).resolves.toBe(
+      "# Authoritative Digital Twin\n",
+    );
+  });
+
   it("prefers the active Obsidian vault over the configured fallback", async () => {
     const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
     const vault = join(home, "Notes");
@@ -153,7 +187,7 @@ describe("portrait publishing", () => {
     );
   });
 
-  it("does not refresh either local document when Drive has no weekly report", async () => {
+  it("refreshes the portrait when Drive has no weekly report", async () => {
     const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
     const fallback = join(home, "publish");
     await mkdir(fallback, { recursive: true });
@@ -172,11 +206,14 @@ describe("portrait publishing", () => {
     const result = await service.pullPortrait();
 
     expect(result).toMatchObject({
-      localRefreshed: false,
+      localRefreshed: true,
       weeklyRefreshed: false,
     });
     expect(await readFile(join(fallback, "portrait.md"), "utf8")).toBe(
-      "# Previous portrait\n",
+      "# New portrait\n",
+    );
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "SOURCE_UNAVAILABLE" }),
     );
   });
 

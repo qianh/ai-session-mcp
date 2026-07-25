@@ -14,6 +14,7 @@ import type {
 } from "./drive-port.js";
 
 const folderMimeType = "application/vnd.google-apps.folder";
+const googleDocumentMimeType = "application/vnd.google-apps.document";
 const fileFields =
   "id,name,mimeType,parents,size,modifiedTime,appProperties,version,trashed";
 
@@ -67,6 +68,21 @@ export class GoogleDrive implements DrivePort {
     }
     this.#client = options.client;
     this.#rootFolderId = options.rootFolderId;
+  }
+
+  static async openMyDrive(client: drive_v3.Drive): Promise<GoogleDrive> {
+    const response = await client.files.get({
+      fileId: "root",
+      fields: "id",
+      supportsAllDrives: true,
+    });
+    if (!response.data.id) {
+      throw new BrainHubError(
+        "DRIVE_ROOT_REQUIRED",
+        "Google Drive did not return the My Drive root ID",
+      );
+    }
+    return new GoogleDrive({ client, rootFolderId: response.data.id });
   }
 
   static async createRoot(
@@ -334,13 +350,17 @@ export class GoogleDrive implements DrivePort {
 
   async read(id: string): Promise<DriveObject> {
     await this.#assertDescendant(id);
-    const [metadata, content] = await Promise.all([
-      this.#metadataResponse(id),
-      this.#client.files.get(
-        { fileId: id, alt: "media", supportsAllDrives: true },
-        { responseType: "arraybuffer" },
-      ),
-    ]);
+    const metadata = await this.#metadataResponse(id);
+    const content =
+      metadata.data.mimeType === googleDocumentMimeType
+        ? await this.#client.files.export(
+            { fileId: id, mimeType: "text/markdown" },
+            { responseType: "arraybuffer" },
+          )
+        : await this.#client.files.get(
+            { fileId: id, alt: "media", supportsAllDrives: true },
+            { responseType: "arraybuffer" },
+          );
     const path = await this.#pathFor(id);
     return {
       ...(await this.#entry(
