@@ -186,7 +186,6 @@ export async function runCli(
     .description("scan and upload local sessions")
     .option("--dry-run", "plan without Drive or local state writes")
     .option("--backfill", "scan all available history")
-    .option("--skip-index", "upload without refreshing the search index")
     .option("--include-subagents", "include sidechains and subagents")
     .option("--sources <sources>", "comma-separated sources", sourceList)
     .option("--json", "machine-readable output")
@@ -195,7 +194,6 @@ export async function runCli(
         dryRun?: boolean;
         backfill?: boolean;
         includeSubagents?: boolean;
-        skipIndex?: boolean;
         sources?: SessionSource[];
         json?: boolean;
       }) => {
@@ -208,9 +206,6 @@ export async function runCli(
               : {}),
             ...(options.includeSubagents !== undefined
               ? { includeSubagents: options.includeSubagents }
-              : {}),
-            ...(options.skipIndex !== undefined
-              ? { skipIndex: options.skipIndex }
               : {}),
             ...(options.sources ? { sources: options.sources } : {}),
           });

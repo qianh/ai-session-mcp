@@ -29,13 +29,6 @@ import { StatusService } from "../status/status-service.js";
 import { UploadLock } from "../upload/lock.js";
 import { UploadService, type UploadOutput } from "../upload/upload-service.js";
 
-export function shouldRefreshSearchIndex(
-  uploaded: number,
-  skipIndex = false,
-): boolean {
-  return uploaded > 0 && !skipIndex;
-}
-
 class VolatileStateStore implements StateStore {
   getOrCreateDevice(name: string): DeviceState {
     return { id: "dry-run", name, createdAt: new Date(0).toISOString() };
@@ -172,7 +165,6 @@ export class BrainHubRuntime {
     includeSubagents?: boolean;
     dryRun?: boolean;
     backfill?: boolean;
-    skipIndex?: boolean;
   }): Promise<UploadOutput & { adapters: object }> {
     const dryRun = input.dryRun ?? false;
     const state: StateStore = dryRun ? new VolatileStateStore() : this.#state();
@@ -224,21 +216,6 @@ export class BrainHubRuntime {
         output = await service.uploadSessions(discovery.sessions, {
           dryRun: false,
         });
-        if (shouldRefreshSearchIndex(output.uploaded, input.skipIndex)) {
-          try {
-            await this.searchService(drive).sync();
-          } catch {
-            output.warnings.push({
-              code: "INDEX_STALE",
-              message: "Upload succeeded but search index refresh failed",
-            });
-          }
-        } else if (output.uploaded > 0 && input.skipIndex) {
-          output.warnings.push({
-            code: "INDEX_SKIPPED",
-            message: "Upload succeeded without refreshing the search index",
-          });
-        }
       } finally {
         await lock.release();
       }

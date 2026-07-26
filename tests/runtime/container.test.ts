@@ -1,16 +1,22 @@
-import { cp, mkdtemp, mkdir, utimes, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdtemp,
+  mkdir,
+  readFile,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { SecretStore } from "../../src/auth/secret-store.js";
 import type { ConfigSecretStoreOptions } from "../../src/auth/secret-store-factory.js";
 import { createDefaultConfig, platformPaths } from "../../src/domain/config.js";
-import {
-  BrainHubRuntime,
-  shouldRefreshSearchIndex,
-} from "../../src/runtime/container.js";
+import { MemoryDrive } from "../../src/drive/memory-drive.js";
+import { BrainHubRuntime } from "../../src/runtime/container.js";
+import { SqliteStateStore } from "../../src/state/sqlite-store.js";
 
 const fixtures = resolve(import.meta.dirname, "..", "fixtures");
 
@@ -48,6 +54,49 @@ async function runtimeFixture(
         : {}),
     }),
   };
+}
+
+function configureSourceRoots(
+  homeDir: string,
+  config: ReturnType<typeof createDefaultConfig>,
+) {
+  const histories = join(homeDir, "histories");
+  const roots = {
+    claude: join(histories, "claude"),
+    codex: join(histories, "codex"),
+    grok: join(histories, "grok"),
+  };
+  config.capture.claudePaths = [roots.claude];
+  config.capture.codexPaths = [roots.codex];
+  config.capture.grokPaths = [roots.grok];
+  return roots;
+}
+
+async function writeSourceFixtures(
+  roots: ReturnType<typeof configureSourceRoots>,
+  options: { invalidGrokSummary?: boolean } = {},
+) {
+  const claude = join(roots.claude, "project", "session.jsonl");
+  const codex = join(roots.codex, "2026", "07", "18", "rollout-test.jsonl");
+  const grok = join(roots.grok, "project", "session");
+  const grokHistory = join(grok, "chat_history.jsonl");
+  await Promise.all([
+    mkdir(dirname(claude), { recursive: true }),
+    mkdir(dirname(codex), { recursive: true }),
+    mkdir(grok, { recursive: true }),
+  ]);
+  await Promise.all([
+    cp(join(fixtures, "claude", "top-level.jsonl"), claude),
+    cp(join(fixtures, "codex", "top-level.jsonl"), codex),
+    cp(join(fixtures, "grok", "top-level", "chat_history.jsonl"), grokHistory),
+    options.invalidGrokSummary
+      ? writeFile(join(grok, "summary.json"), "{")
+      : cp(
+          join(fixtures, "grok", "top-level", "summary.json"),
+          join(grok, "summary.json"),
+        ),
+  ]);
+  return { claude, codex, grok, grokHistory };
 }
 
 describe("BrainHub runtime", () => {
@@ -117,10 +166,43 @@ describe("BrainHub runtime", () => {
     fixture.runtime.close();
   });
 
-  it("allows a backfill to skip automatic search indexing", () => {
-    expect(shouldRefreshSearchIndex(10, false)).toBe(true);
-    expect(shouldRefreshSearchIndex(10, true)).toBe(false);
-    expect(shouldRefreshSearchIndex(0, false)).toBe(false);
+  it("does not couple a successful upload to search indexing", async () => {
+    const { runtime, config } = await runtimeFixture();
+    const sourcePath = join(
+      dirname(config.capture.codexPaths[0]!),
+      "sessions",
+      "2026",
+      "07",
+      "18",
+      "rollout-test.jsonl",
+    );
+    config.capture.codexPaths = [
+      dirname(dirname(dirname(dirname(sourcePath)))),
+    ];
+    await mkdir(dirname(sourcePath), { recursive: true });
+    await cp(join(fixtures, "codex", "top-level.jsonl"), sourcePath);
+    const drive = new MemoryDrive();
+    vi.spyOn(runtime, "drive").mockResolvedValue(drive);
+    const search = vi.spyOn(runtime, "searchService").mockImplementation(() => {
+      throw new Error("search indexing must be explicit");
+    });
+
+    const result = await runtime.uploadSessions({
+      sources: ["codex"],
+      backfill: true,
+    });
+
+    expect(result.uploaded).toBe(1);
+    expect(search).not.toHaveBeenCalled();
+    expect(result.warnings).not.toContainEqual(
+      expect.objectContaining({ code: expect.stringMatching(/^INDEX_/) }),
+    );
+    expect(
+      (await drive.list({ prefix: "" })).every((entry) =>
+        entry.path.startsWith("inbox/"),
+      ),
+    ).toBe(true);
+    runtime.close();
   });
 
   it("returns local hub status when Drive is not configured", async () => {
@@ -234,6 +316,122 @@ describe("BrainHub runtime", () => {
     await expect(
       import("node:fs/promises").then(({ access }) => access(paths.stateFile)),
     ).rejects.toThrow();
+    runtime.close();
+  });
+
+  it("incrementally uploads all three local sources and performs no unchanged writes", async () => {
+    const { runtime, config, paths, homeDir } = await runtimeFixture();
+    const roots = configureSourceRoots(homeDir, config);
+    const drive = new MemoryDrive();
+    vi.spyOn(runtime, "drive").mockResolvedValue(drive);
+    const baseline = await runtime.uploadSessions({});
+    expect(baseline.scanned).toBe(0);
+    const baselineState = new SqliteStateStore(paths.stateFile);
+    const baselineTime = new Date(
+      baselineState.getDiscoveryWatermark("claude-code")!,
+    ).getTime();
+    baselineState.close();
+    const stableMtime = new Date(baselineTime + 1);
+    const waitMs = Math.max(0, stableMtime.getTime() - Date.now() + 1);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    const sourceFiles = await writeSourceFixtures(roots);
+    await Promise.all(
+      [sourceFiles.claude, sourceFiles.codex, sourceFiles.grokHistory].map(
+        (path) => utimes(path, stableMtime, stableMtime),
+      ),
+    );
+
+    const first = await runtime.uploadSessions({});
+
+    expect(first).toMatchObject({ scanned: 3, uploaded: 3 });
+    expect(first.adapters).toMatchObject({
+      claude: { captured: 1, malformed: 1, errors: 0 },
+      codex: { captured: 1, errors: 0 },
+      grok: { captured: 1, errors: 0 },
+    });
+    const before = await drive.list({ prefix: "inbox/" });
+    const state = new SqliteStateStore(paths.stateFile);
+    expect(state.getDiscoveryWatermark("claude-code")).not.toBeNull();
+    expect(state.getDiscoveryWatermark("codex")).not.toBeNull();
+    expect(state.getDiscoveryWatermark("grok-build")).not.toBeNull();
+    state.close();
+
+    const second = await runtime.uploadSessions({});
+    const after = await drive.list({ prefix: "inbox/" });
+
+    expect(second).toMatchObject({ scanned: 0, uploaded: 0, unchanged: 0 });
+    expect(after).toEqual(before);
+    runtime.close();
+  });
+
+  it("advances only successful source watermarks", async () => {
+    const { runtime, config, paths, homeDir } = await runtimeFixture();
+    const roots = configureSourceRoots(homeDir, config);
+    vi.spyOn(runtime, "drive").mockResolvedValue(new MemoryDrive());
+    await runtime.uploadSessions({});
+    const baselineState = new SqliteStateStore(paths.stateFile);
+    const baseline = {
+      claude: baselineState.getDiscoveryWatermark("claude-code"),
+      codex: baselineState.getDiscoveryWatermark("codex"),
+      grok: baselineState.getDiscoveryWatermark("grok-build"),
+    };
+    baselineState.close();
+    await writeSourceFixtures(roots, { invalidGrokSummary: true });
+
+    const result = await runtime.uploadSessions({});
+
+    expect(result).toMatchObject({ scanned: 2, uploaded: 2 });
+    expect(result.adapters).toMatchObject({
+      claude: { captured: 1, malformed: 1, errors: 0 },
+      codex: { captured: 1, errors: 0 },
+      grok: { captured: 0, errors: 1 },
+    });
+    const state = new SqliteStateStore(paths.stateFile);
+    expect(state.getDiscoveryWatermark("claude-code")).not.toBe(
+      baseline.claude,
+    );
+    expect(state.getDiscoveryWatermark("codex")).not.toBe(baseline.codex);
+    expect(state.getDiscoveryWatermark("grok-build")).toBe(baseline.grok);
+    state.close();
+    runtime.close();
+  });
+
+  it("retries a preprocessing failure even when its file is older than the watermark", async () => {
+    const { runtime, config, paths, homeDir } = await runtimeFixture();
+    const roots = configureSourceRoots(homeDir, config);
+    config.capture.codexPaths = [];
+    config.capture.grokPaths = [];
+    const drive = new MemoryDrive();
+    vi.spyOn(runtime, "drive").mockResolvedValue(drive);
+    await runtime.uploadSessions({ sources: ["claude-code"] });
+    const { claude } = await writeSourceFixtures(roots);
+    const original = await readFile(claude, "utf8");
+    const imagePattern = /iVBORw0KGgo[A-Za-z0-9+/=]+/u;
+    await writeFile(
+      claude,
+      original.replace(imagePattern, "not-valid-image-data"),
+    );
+
+    const failed = await runtime.uploadSessions({ sources: ["claude-code"] });
+    expect(failed.warnings).toContainEqual(
+      expect.objectContaining({ code: "SESSION_PROCESSING_FAILED" }),
+    );
+    const state = new SqliteStateStore(paths.stateFile);
+    const watermark = state.getDiscoveryWatermark("claude-code")!;
+    expect(state.listPending(10)).toHaveLength(1);
+    state.close();
+    await writeFile(claude, original);
+    const oldTime = new Date(new Date(watermark).getTime() - 60_000);
+    await utimes(claude, oldTime, oldTime);
+    const withoutPending = await runtime.discover({
+      sources: ["claude-code"],
+      modifiedAfter: { "claude-code": watermark },
+    });
+    expect(withoutPending.status.claude.discovered).toBe(0);
+
+    const retried = await runtime.uploadSessions({ sources: ["claude-code"] });
+
+    expect(retried).toMatchObject({ scanned: 1, uploaded: 1 });
     runtime.close();
   });
 });

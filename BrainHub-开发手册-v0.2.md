@@ -55,9 +55,9 @@ gdrive:/
 └── brain-hub/
     ├── inbox/                  # 采集落地区,蒸馏后清空
     │   ├── <device-name>/      # 模块一写入
-    │   └── web-<profile>/      # 模块二写入
+    │   ├── web-<profile>/      # 模块二写入
+    │   └── _assets/sha256/     # 采集图片,按内容寻址去重
     ├── sessions/YYYY-MM/       # 规整后的原始会话(Markdown)
-    ├── images/sha256/xx/…webp  # 内容寻址图片库(全局去重)
     ├── cards/YYYY-MM/          # L1 卡片
     ├── weekly/                 # L2 周报(+合并大文件供 NotebookLM)
     ├── publish/                # BrainHub 对外发布区
@@ -80,7 +80,7 @@ turn_count: N
 ## User
 …
 ## Assistant
-…(图片替换为 ![](images/sha256/xx/xxxx.webp) 引用;网页端图片本期保留 URL)
+…(图片替换为 ![](inbox/_assets/sha256/xx/xxxx.webp) 引用;网页端图片本期保留 URL)
 ```
 
 > 两个采集模块只负责产出符合此契约的文件;蒸馏模块只消费此契约。三个模块可完全并行开发。
@@ -107,7 +107,7 @@ turn_count: N
 
 | 工具 | 功能 | 说明 |
 |------|------|------|
-| `upload_sessions` | 扫描本机各 CLI 会话目录 → 转统一格式 → 抽图去重 → 上传 inbox → 清空本地暂存 | 幂等:按 conversation_id+updated_at 水位增量 |
+| `upload_sessions` | 扫描本机各 CLI 会话目录 → 转统一格式 → 抽图去重 → 上传 inbox | 三来源独立水位,失败路径可重试,原生历史只读 |
 | `search_sessions` | 关键词/时间范围检索 Drive 的 cards+sessions | 优先搜 cards(信息密度高),命中后按需取原文 |
 | `get_portrait` | 返回最新自画像供 AI 对话使用 | **直读 My Drive:/Digital_Twin_Profile.md**,并静默刷新 vault 中的 `portrait.md` 副本 |
 | `pull_portrait` | 手动更新 Obsidian:拉取数字分身与 BrainHub 最新周报 | 数字分身可在周报缺失时独立更新;返回值直接展示 L3 的"变更 Diff"段落 |
@@ -119,17 +119,20 @@ turn_count: N
 |------|----------|------|
 | Claude Code | `~/.claude/projects/**/*.jsonl` | jsonl,含 base64 图片 |
 | Codex CLI | `~/.codex/sessions/` | jsonl |
+| Grok Build | `~/.grok/sessions/` | jsonl + summary.json |
 | Gemini CLI | 待确认 | — |
 
-**图片处理**:抽出 base64 → sha256 → 查 `_meta/image-index.json` 去重 → 新图转 WebP(质量80)上传 → 正文替换为引用。
+**图片处理**:抽出 base64 → sha256 → 仅在 `inbox/_assets/sha256/` 查重 → 新图转 WebP(质量80)上传 → 正文替换为引用。
 
-**Drive 访问**:内嵌 rclone 或 googleapis SDK,OAuth 凭证存系统钥匙串。上传语义一律 `move`,成功校验后即删本地(C2)。
+**Drive 访问**:使用 googleapis SDK,OAuth 凭证存系统钥匙串。本机增量上报的所有远程枚举、读取、写入、移动和清理都限制在 `brain-hub/inbox/`;远程其他目录不参与候选匹配。原生会话文件始终只读。
+
+**每日增量**:launchd/systemd 默认 02:00 显式执行 Claude Code、Codex、Grok Build 三个来源。每个来源在本地 SQLite 独立保存扫描水位;解析失败只冻结对应来源,预处理或上传失败通过待重试路径跨越水位重试。上报结束后进程直接退出,搜索索引仅由独立命令维护。
 
 **Obsidian 写入**:定时同步及 `pull_portrait` / `get_portrait` 仅写 `<vault>/BrainHub/` 目录,内容变化时成对原子覆盖,不触碰 vault 其他内容(C8)。
 
 ### 1.3 验收标准
 
-- 新会话 24h 内到达 inbox;本机除 vault/BrainHub 外无残留;重复上传零重复
+- 新会话 24h 内到达 inbox;本机只保留不含正文的水位/哈希/重试状态;重复上传零重复
 - 四个工具在 MCP 客户端中可自然语言触发;`pull_portrait` 返回可读的本期 diff
 
 ---

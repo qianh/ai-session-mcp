@@ -18,7 +18,9 @@ describe("scheduler templates", () => {
     expect(plist).toContain(
       "<string>/opt/brain hub/dist/cli/index.js</string>",
     );
-    expect(plist).toContain("<string>upload</string>");
+    expect(plist).toContain(
+      "<string>upload</string>\n    <string>--sources</string>\n    <string>claude-code,codex,grok-build</string>\n    <string>--json</string>",
+    );
   });
 
   it("renders a persistent user timer and oneshot service", () => {
@@ -29,7 +31,7 @@ describe("scheduler templates", () => {
     });
     expect(units.service).toContain("Type=oneshot");
     expect(units.service).toContain(
-      'ExecStart=/usr/local/bin/node "/opt/brain hub/dist/cli/index.js" upload',
+      'ExecStart=/usr/local/bin/node "/opt/brain hub/dist/cli/index.js" upload --sources claude-code,codex,grok-build --json',
     );
     expect(units.timer).toContain("OnCalendar=*-*-* 02:00:00");
     expect(units.timer).toContain("Persistent=true");

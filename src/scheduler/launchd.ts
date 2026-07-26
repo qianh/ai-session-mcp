@@ -1,3 +1,5 @@
+import { dailyUploadArguments, portraitSyncArguments } from "./jobs.js";
+
 function xml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -19,7 +21,7 @@ export function renderLaunchAgent(options: {
     throw new Error("Invalid schedule time");
   const sync = options.job === "portrait-sync";
   const label = sync ? "com.brainhub.sync" : "com.brainhub.upload";
-  const commandArguments = sync ? ["portrait", "pull"] : ["upload"];
+  const commandArguments = sync ? portraitSyncArguments : dailyUploadArguments;
   const logName = sync ? "sync" : "upload";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

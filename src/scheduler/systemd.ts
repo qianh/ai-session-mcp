@@ -1,3 +1,5 @@
+import { dailyUploadArguments, portraitSyncArguments } from "./jobs.js";
+
 function quoteArgument(value: string): string {
   return /\s/u.test(value) ? `"${value.replaceAll('"', '\\"')}"` : value;
 }
@@ -14,7 +16,7 @@ export function renderSystemdUnits(options: {
   const description = sync
     ? "Sync BrainHub portrait to the local publish directory"
     : "Upload local AI sessions to BrainHub";
-  const commandArguments = sync ? ["portrait", "pull"] : ["upload"];
+  const commandArguments = sync ? portraitSyncArguments : dailyUploadArguments;
   const serviceName = sync
     ? "brainhub-sync.service"
     : "brainhub-upload.service";

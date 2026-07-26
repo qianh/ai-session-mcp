@@ -77,7 +77,9 @@ OAuth client JSON 标识的是应用，不会把授权固定到创建该 client 
 
 refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙串，Linux 存在 Secret Service。凭证按配置文件路径隔离，因此同一电脑上的两个 `--config` 不会互相覆盖；旧版按设备名保存的凭证会在首次读取时迁移。代码对所有 Drive ID 操作验证根目录祖先关系，MCP 工具不接受任意 Drive file ID。
 
-`upload.concurrency` 控制同时处理的会话数，范围为 1-32。大型首次回填可使用 `--skip-index` 先完成 Drive 文件上传；该选项不会改变上传内容，只会返回 `INDEX_SKIPPED` warning 并跳过本轮自动搜索索引刷新。后续不带该选项的上传仍会按默认行为刷新索引。
+`upload.concurrency` 控制同时处理的会话数，范围为 1-32。会话上传只允许访问 `brain-hub/inbox/`：会话写入 `inbox/<device>/`，图片写入 `inbox/_assets/sha256/`。具有相同去重属性但位于 `inbox/` 外的对象不会参与匹配、读取、移动或清理。
+
+增量发现按 `claude-code`、`codex`、`grok-build` 分别在本地 SQLite 保存水位。普通运行只处理水位后的文件以及待重试路径；适配器失败时仅保留该来源的旧水位，预处理或上传失败会留下可重试状态。`--backfill` 才会忽略水位并扫描全部历史。
 
 ## 采集与隐私
 
@@ -106,7 +108,7 @@ refresh token 不进入 TOML、环境变量或 SQLite：macOS 存在登录钥匙
 
 ## 本地后台任务
 
-`brain-mcp clients install <client>` 和 `brain-mcp clients install --all` 会在 MCP 客户端注册成功后自动安装两份任务：`[scheduler].at` 控制每日会话上传，默认 `02:00`；`[scheduler].sync_at` 控制每日画像同步，默认 `06:00`。同步时间应晚于云端发布窗口。
+`brain-mcp clients install <client>` 和 `brain-mcp clients install --all` 会在 MCP 客户端注册成功后自动安装两份任务：`[scheduler].at` 控制每日会话上传，默认 `02:00`，固定执行 `upload --sources claude-code,codex,grok-build --json`；`[scheduler].sync_at` 控制每日画像同步，默认 `06:00`。同步时间应晚于云端发布窗口。
 
 只有明确不希望启用任何后台任务时，才使用 `brain-mcp clients install <client> --no-scheduler`。`scheduler install|status|uninstall` 保留用于修改、修复或同时移除两份任务。也可使用 `brain-mcp scheduler install --at 02:00 --sync-at 06:00` 修复安装。
 
@@ -157,4 +159,4 @@ Claude Desktop 配置采用保留未知字段的 JSON 合并，并在覆盖前�
 
 E5 输入使用 `query:` / `passage:` 前缀，单块不超过 448 个估算 token，保留 64 token 重叠。向量对象按内容 SHA-256 寻址，带模型版本、维度和校验和；manifest 使用 ETag 条件写和冲突重试。损坏或版本不匹配的对象会从 Drive Markdown 重建。
 
-本地不保存向量索引。查询时从 Drive 读取所需向量到内存，结果按 `cards > sessions > inbox` 加权并按 conversation ID 去重。索引刷新失败时返回已有结果，同时明确标记 `INDEX_STALE`。
+会话上传与索引维护完全分离，不会自动扫描远程目录或构建向量。需要时显式执行 `brain-mcp search sync --json`；完整重建使用 `brain-mcp search reindex --json`。本地不保存向量索引。查询时从 Drive 读取所需向量到内存，结果按 `cards > sessions > inbox` 加权并按 conversation ID 去重。索引刷新失败时返回已有结果，同时明确标记 `INDEX_STALE`。

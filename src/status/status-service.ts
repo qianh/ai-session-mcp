@@ -76,7 +76,8 @@ export class StatusService {
       };
       for (const entry of inbox) {
         const device = entry.path.split("/")[1];
-        if (device) output.inbox[device] = (output.inbox[device] ?? 0) + 1;
+        if (!device || device === "_assets") continue;
+        output.inbox[device] = (output.inbox[device] ?? 0) + 1;
       }
       if (distillFile) {
         try {

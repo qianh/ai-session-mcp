@@ -48,6 +48,147 @@ async function fixture(): Promise<{
 }
 
 describe("upload service", () => {
+  it("keeps every uploaded artifact inside inbox", async () => {
+    const { session, state } = await fixture();
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    session.turns = [
+      {
+        role: "user",
+        text: "inspect",
+        images: [{ kind: "embedded", mediaType: "image/png", data: png }],
+      },
+    ];
+    const drive = new MemoryDrive();
+    const service = new UploadService({ drive, state, deviceId: "device-1" });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.uploaded).toBe(1);
+    const paths = (await drive.list({ prefix: "" })).map((entry) => entry.path);
+    expect(paths.length).toBeGreaterThan(1);
+    expect(paths.every((path) => path.startsWith("inbox/"))).toBe(true);
+    const markdownEntry = (await drive.list({ prefix: "inbox/macbook/" }))[0];
+    expect(markdownEntry).toBeDefined();
+    const markdown = (await drive.read(markdownEntry!.id)).bytes.toString();
+    expect(markdown).toContain("inbox/_assets/sha256/");
+  });
+
+  it("ignores matching candidates outside inbox", async () => {
+    const { session, state } = await fixture();
+    const drive = new MemoryDrive();
+    const outside = await drive.put({
+      path: "sessions/2026-07/newer.md",
+      bytes: Buffer.from("outside"),
+      mimeType: "text/markdown",
+      appProperties: {
+        brainhubKey: conversationKey("codex", "conversation-1"),
+        source: "codex",
+        conversationId: "conversation-1",
+        deviceId: "cloud",
+        updatedAt: "2026-07-19T02:00:00.000Z",
+        contentSha256: "f".repeat(64),
+      },
+    });
+    const service = new UploadService({ drive, state, deviceId: "device-1" });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.uploaded).toBe(1);
+    expect(await drive.list({ prefix: "inbox/macbook/" })).toHaveLength(1);
+    await expect(drive.read(outside.id)).resolves.toMatchObject({
+      path: "sessions/2026-07/newer.md",
+    });
+  });
+
+  it("rejects out-of-scope entries returned by a buggy Drive", async () => {
+    const { session, state } = await fixture();
+    const base = new MemoryDrive();
+    const outside = await base.put({
+      path: "sessions/2026-07/newer.md",
+      bytes: Buffer.from("outside"),
+      mimeType: "text/markdown",
+      appProperties: {
+        brainhubKey: conversationKey("codex", "conversation-1"),
+        source: "codex",
+        conversationId: "conversation-1",
+        deviceId: "cloud",
+        updatedAt: "2026-07-19T02:00:00.000Z",
+        contentSha256: "f".repeat(64),
+      },
+    });
+    const touchedOutside: string[] = [];
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "list") {
+          return (query: Parameters<MemoryDrive["list"]>[0]) =>
+            target.list({
+              ...(query.appProperty ? { appProperty: query.appProperty } : {}),
+              ...(query.modifiedAfter
+                ? { modifiedAfter: query.modifiedAfter }
+                : {}),
+            });
+        }
+        if (["read", "move", "trash"].includes(String(property))) {
+          return async (...args: unknown[]) => {
+            if (args[0] === outside.id) touchedOutside.push(String(property));
+            return (
+              target[property as "read"] as (...values: never[]) => unknown
+            )(...(args as never[]));
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const service = new UploadService({
+      drive,
+      state,
+      deviceId: "device-1",
+    });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.uploaded).toBe(1);
+    expect(touchedOutside).toEqual([]);
+    expect(await base.list({ prefix: "inbox/macbook/" })).toHaveLength(1);
+  });
+
+  it("does not reuse a matching image outside inbox", async () => {
+    const { session, state } = await fixture();
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    session.turns = [
+      {
+        role: "user",
+        text: "inspect",
+        images: [{ kind: "embedded", mediaType: "image/png", data: png }],
+      },
+    ];
+    const processed = await import("../../src/capture/images.js").then(
+      ({ processSessionImages }) => processSessionImages(session),
+    );
+    const image = processed.artifacts[0]!;
+    const drive = new MemoryDrive();
+    const outside = await drive.put({
+      path: `images/sha256/${image.sha256.slice(0, 2)}/${image.sha256}.webp`,
+      bytes: image.bytes,
+      mimeType: "image/webp",
+      appProperties: { brainhubImageSha: image.sha256 },
+    });
+    const service = new UploadService({ drive, state, deviceId: "device-1" });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.uploaded).toBe(1);
+    expect(await drive.list({ prefix: "inbox/_assets/sha256/" })).toHaveLength(
+      1,
+    );
+    await expect(drive.read(outside.id)).resolves.toMatchObject({
+      path: expect.stringMatching(/^images\/sha256\//),
+    });
+  });
+
   it("plans a dry run without writing Drive or state", async () => {
     const { session, state } = await fixture();
     const drive = new MemoryDrive();
@@ -66,15 +207,17 @@ describe("upload service", () => {
     expect(state.listPending(10)).toEqual([]);
   });
 
-  it("processes sessions up to the configured concurrency", async () => {
+  it("loads the remote inbox inventory once for a concurrent batch", async () => {
     const { session, state } = await fixture();
     const base = new MemoryDrive();
     let activeLists = 0;
     let maxActiveLists = 0;
+    let listCalls = 0;
     const drive = new Proxy(base, {
       get(target, property, receiver) {
         if (property === "list") {
           return async (...args: Parameters<MemoryDrive["list"]>) => {
+            listCalls += 1;
             activeLists += 1;
             maxActiveLists = Math.max(maxActiveLists, activeLists);
             await new Promise((resolve) => setTimeout(resolve, 15));
@@ -103,7 +246,8 @@ describe("upload service", () => {
     const result = await service.uploadSessions(sessions, { dryRun: true });
 
     expect(result.eligible).toBe(6);
-    expect(maxActiveLists).toBe(3);
+    expect(listCalls).toBe(1);
+    expect(maxActiveLists).toBe(1);
   });
 
   it("uploads, verifies, and makes a repeated run idempotent", async () => {
@@ -123,6 +267,111 @@ describe("upload service", () => {
       "hunter2",
     );
     expect(await readFile(session.sourcePath, "utf8")).toBe(sourceBytes);
+  });
+
+  it("keeps one remote session when two devices upload the same key", async () => {
+    const first = await fixture();
+    const second = await fixture();
+    first.session.device = "macbook-a";
+    second.session.device = "macbook-b";
+    const base = new MemoryDrive();
+    let initialLists = 0;
+    let releaseLists: () => void = () => undefined;
+    const listsReady = new Promise<void>((resolve) => {
+      releaseLists = resolve;
+    });
+    let candidatePuts = 0;
+    let releasePuts: () => void = () => undefined;
+    const putsReady = new Promise<void>((resolve) => {
+      releasePuts = resolve;
+    });
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "list") {
+          return async (...args: Parameters<MemoryDrive["list"]>) => {
+            const snapshot = await target.list(...args);
+            if (initialLists < 2) {
+              initialLists += 1;
+              if (initialLists === 2) releaseLists();
+              await listsReady;
+            }
+            return snapshot;
+          };
+        }
+        if (property === "put") {
+          return async (...args: Parameters<MemoryDrive["put"]>) => {
+            const entry = await target.put(...args);
+            if (args[0].mimeType === "text/markdown") {
+              candidatePuts += 1;
+              if (candidatePuts === 2) releasePuts();
+              await putsReady;
+            }
+            return entry;
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const firstService = new UploadService({
+      drive,
+      state: first.state,
+      deviceId: "device-a",
+    });
+    const secondService = new UploadService({
+      drive,
+      state: second.state,
+      deviceId: "device-b",
+    });
+
+    await Promise.all([
+      firstService.uploadSessions([first.session], { dryRun: false }),
+      secondService.uploadSessions([second.session], { dryRun: false }),
+    ]);
+
+    const remote = await base.list({
+      prefix: "inbox/",
+      appProperty: {
+        key: "brainhubKey",
+        value: conversationKey("codex", "conversation-1"),
+      },
+    });
+    expect(remote).toHaveLength(1);
+  });
+
+  it("keeps an uploaded candidate retryable until shared reconciliation succeeds", async () => {
+    const { session, state } = await fixture();
+    const base = new MemoryDrive();
+    let listCalls = 0;
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "list") {
+          return async (...args: Parameters<MemoryDrive["list"]>) => {
+            listCalls += 1;
+            if (listCalls === 2)
+              throw new Error("shared reconciliation unavailable");
+            return target.list(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const service = new UploadService({
+      drive,
+      state,
+      deviceId: "device-1",
+    });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.uploaded).toBe(0);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "UPLOAD_FAILED" }),
+    );
+    expect(
+      state.getSession(conversationKey(session.source, session.conversationId)),
+    ).toMatchObject({ status: "failed", retryable: true });
   });
 
   it("does not replace a newer remote candidate", async () => {
@@ -192,6 +441,220 @@ describe("upload service", () => {
     });
   });
 
+  it("cleans only the temporary candidate when promotion fails", async () => {
+    const { session, state } = await fixture();
+    const base = new MemoryDrive();
+    let candidateId: string | null = null;
+    const trashedIds: string[] = [];
+    const drive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "put") {
+          return async (...args: Parameters<MemoryDrive["put"]>) => {
+            const entry = await target.put(...args);
+            if (args[0].mimeType === "text/markdown") candidateId = entry.id;
+            return entry;
+          };
+        }
+        if (property === "move") {
+          return async (...args: Parameters<MemoryDrive["move"]>) => {
+            if (args[0] === candidateId)
+              throw new Error("promotion move failed");
+            return target.move(...args);
+          };
+        }
+        if (property === "trash") {
+          return async (...args: Parameters<MemoryDrive["trash"]>) => {
+            trashedIds.push(args[0]);
+            return target.trash(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const service = new UploadService({ drive, state, deviceId: "device-1" });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.uploaded).toBe(0);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "UPLOAD_FAILED" }),
+    );
+    expect(candidateId).not.toBeNull();
+    expect(trashedIds).toEqual([candidateId]);
+    expect(await base.list({ prefix: "inbox/" })).toEqual([]);
+  });
+
+  it("keeps preprocessing failures retryable by source path", async () => {
+    const { session, state } = await fixture();
+    session.turns = [
+      {
+        role: "user",
+        text: "broken",
+        images: [
+          {
+            kind: "embedded",
+            mediaType: "image/png",
+            data: "not-valid-image-data",
+          },
+        ],
+      },
+    ];
+    const service = new UploadService({
+      drive: new MemoryDrive(),
+      state,
+      deviceId: "device-1",
+    });
+
+    const result = await service.uploadSessions([session], { dryRun: false });
+
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "SESSION_PROCESSING_FAILED" }),
+    );
+    expect(
+      state.getSession(conversationKey(session.source, session.conversationId)),
+    ).toMatchObject({
+      sourcePath: session.sourcePath,
+      status: "failed",
+      retryable: true,
+      lastErrorCode: "SESSION_PROCESSING_FAILED",
+    });
+  });
+
+  it("preserves a promoted canonical when local state persistence fails", async () => {
+    const { session, state } = await fixture();
+    let failMarkUploaded = true;
+    const failingState = new Proxy(state, {
+      get(target, property, receiver) {
+        if (property === "markUploaded") {
+          return (...args: Parameters<SqliteStateStore["markUploaded"]>) => {
+            if (failMarkUploaded) {
+              failMarkUploaded = false;
+              throw new Error("state write failed");
+            }
+            return target.markUploaded(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const drive = new MemoryDrive();
+    const first = new UploadService({
+      drive,
+      state: failingState,
+      deviceId: "device-1",
+    });
+
+    const failed = await first.uploadSessions([session], { dryRun: false });
+
+    expect(failed.warnings).toContainEqual(
+      expect.objectContaining({ code: "UPLOAD_FAILED" }),
+    );
+    expect(await drive.list({ prefix: "inbox/macbook/" })).toHaveLength(1);
+
+    let retryMoves = 0;
+    const retryDrive = new Proxy(drive, {
+      get(target, property, receiver) {
+        if (property === "move") {
+          return async (...args: Parameters<MemoryDrive["move"]>) => {
+            retryMoves += 1;
+            return target.move(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const retry = new UploadService({
+      drive: retryDrive,
+      state,
+      deviceId: "device-1",
+    });
+    const repaired = await retry.uploadSessions([session], { dryRun: false });
+
+    expect(repaired).toMatchObject({ uploaded: 0, unchanged: 1 });
+    expect(retryMoves).toBe(0);
+    expect(
+      state.getSession(conversationKey(session.source, session.conversationId)),
+    ).toMatchObject({ status: "uploaded", retryable: false });
+  });
+
+  it("preserves the winner when loser cleanup fails and converges on retry", async () => {
+    const { session, state } = await fixture();
+    const base = new MemoryDrive();
+    const loser = await base.put({
+      path: "inbox/other/older.md",
+      bytes: Buffer.from("older"),
+      mimeType: "text/markdown",
+      appProperties: {
+        brainhubKey: conversationKey(session.source, session.conversationId),
+        source: session.source,
+        conversationId: session.conversationId,
+        deviceId: "other",
+        updatedAt: "2026-07-17T00:00:00.000Z",
+        contentSha256: "0".repeat(64),
+      },
+    });
+    let failLoserCleanup = true;
+    const failingDrive = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "trash") {
+          return async (id: string) => {
+            if (id === loser.id && failLoserCleanup) {
+              failLoserCleanup = false;
+              throw new Error("loser cleanup failed");
+            }
+            return target.trash(id);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const first = new UploadService({
+      drive: failingDrive,
+      state,
+      deviceId: "device-1",
+    });
+
+    const failed = await first.uploadSessions([session], { dryRun: false });
+
+    expect(failed.warnings).toContainEqual(
+      expect.objectContaining({ code: "UPLOAD_FAILED" }),
+    );
+    expect(
+      await base.list({
+        prefix: "inbox/",
+        appProperty: {
+          key: "brainhubKey",
+          value: conversationKey(session.source, session.conversationId),
+        },
+      }),
+    ).toHaveLength(2);
+
+    const retry = new UploadService({
+      drive: base,
+      state,
+      deviceId: "device-1",
+    });
+    const repaired = await retry.uploadSessions([session], { dryRun: false });
+
+    expect(repaired).toMatchObject({ uploaded: 0, unchanged: 1 });
+    expect(
+      await base.list({
+        prefix: "inbox/",
+        appProperty: {
+          key: "brainhubKey",
+          value: conversationKey(session.source, session.conversationId),
+        },
+      }),
+    ).toHaveLength(1);
+    expect(
+      state.getSession(conversationKey(session.source, session.conversationId)),
+    ).toMatchObject({ status: "uploaded" });
+  });
+
   it("deduplicates identical images across the whole batch", async () => {
     const { session, state } = await fixture();
     const png =
@@ -248,7 +711,7 @@ describe("upload service", () => {
         if (property === "put") {
           return async (...args: Parameters<MemoryDrive["put"]>) => {
             const [input] = args;
-            if (input.path.startsWith("images/sha256/")) {
+            if (input.path.startsWith("inbox/_assets/sha256/")) {
               imagePuts += 1;
               await new Promise((resolve) => setTimeout(resolve, 25));
               const result = await target.put(...args);
@@ -278,7 +741,7 @@ describe("upload service", () => {
     expect(imagePuts).toBe(1);
   });
 
-  it("retries a shared image after a transient upload lookup failure", async () => {
+  it("retries a shared image after a transient upload failure", async () => {
     const { session, state } = await fixture();
     const png =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -296,18 +759,18 @@ describe("upload service", () => {
       }),
     );
     const base = new MemoryDrive();
-    let imageLookups = 0;
+    let imagePuts = 0;
     const drive = new Proxy(base, {
       get(target, property, receiver) {
-        if (property === "list") {
-          return async (...args: Parameters<MemoryDrive["list"]>) => {
-            const [query] = args;
-            if (query.appProperty?.key === "brainhubImageSha") {
-              imageLookups += 1;
-              if (imageLookups === 1)
-                throw new Error("transient Drive lookup failure");
+        if (property === "put") {
+          return async (...args: Parameters<MemoryDrive["put"]>) => {
+            const [input] = args;
+            if (input.path.startsWith("inbox/_assets/sha256/")) {
+              imagePuts += 1;
+              if (imagePuts === 1)
+                throw new Error("transient Drive upload failure");
             }
-            return target.list(...args);
+            return target.put(...args);
           };
         }
         const value = Reflect.get(target, property, receiver) as unknown;
@@ -324,7 +787,7 @@ describe("upload service", () => {
     const result = await service.uploadSessions(sessions, { dryRun: false });
 
     expect(result.uploaded).toBe(1);
-    expect(imageLookups).toBe(2);
+    expect(imagePuts).toBe(2);
   });
 
   it("redacts credentials and internal hosts from remote image references", async () => {

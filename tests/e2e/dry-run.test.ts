@@ -11,6 +11,30 @@ const repository = resolve(import.meta.dirname, "..", "..");
 const fixtures = join(repository, "tests", "fixtures");
 
 describe("CLI dry run", () => {
+  it("does not expose upload-time search indexing", async () => {
+    const { stdout } = await execute(
+      process.execPath,
+      ["--import", "tsx", "src/cli/index.ts", "upload", "--help"],
+      { cwd: repository },
+    );
+
+    expect(stdout).not.toContain("--skip-index");
+    await expect(
+      execute(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "src/cli/index.ts",
+          "upload",
+          "--skip-index",
+          "--dry-run",
+        ],
+        { cwd: repository },
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+  });
+
   it("scans every adapter without Drive, OAuth, or persistent state", async () => {
     const home = await mkdtemp(join(tmpdir(), "brainhub-e2e-"));
     const claude = join(

@@ -17,6 +17,11 @@ describe("hub status", () => {
       mimeType: "text/markdown",
     });
     await drive.put({
+      path: "inbox/_assets/sha256/ab/image.webp",
+      bytes: Buffer.from("image"),
+      mimeType: "image/webp",
+    });
+    await drive.put({
       path: "_meta/distill-status.json",
       bytes: Buffer.from(
         JSON.stringify({ schema_version: 1, daily: { status: "success" } }),

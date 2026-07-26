@@ -27,7 +27,7 @@ export async function processSessionImages(
       if (image.kind !== "embedded") continue;
       const sha256 = embeddedImageKey(image.data);
       if (references.has(sha256)) continue;
-      const drivePath = `images/sha256/${sha256.slice(0, 2)}/${sha256}.webp`;
+      const drivePath = `inbox/_assets/sha256/${sha256.slice(0, 2)}/${sha256}.webp`;
       const bytes = await sharp(Buffer.from(image.data, "base64"))
         .rotate()
         .webp({ quality: 80 })

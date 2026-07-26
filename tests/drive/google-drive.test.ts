@@ -62,6 +62,188 @@ function createConcurrentDriveClient() {
 }
 
 describe("Google Drive boundary", () => {
+  it("scopes app-property listing to the requested prefix subtree", async () => {
+    const entries = [
+      {
+        id: "inbox",
+        name: "inbox",
+        mimeType: folderMimeType,
+        parents: ["root"],
+        appProperties: {},
+      },
+      {
+        id: "device",
+        name: "device",
+        mimeType: folderMimeType,
+        parents: ["inbox"],
+        appProperties: {},
+      },
+      {
+        id: "inside",
+        name: "inside.md",
+        mimeType: "text/markdown",
+        parents: ["device"],
+        appProperties: { brainhubKey: "shared" },
+      },
+      {
+        id: "sessions",
+        name: "sessions",
+        mimeType: folderMimeType,
+        parents: ["root"],
+        appProperties: {},
+      },
+      {
+        id: "outside",
+        name: "outside.md",
+        mimeType: "text/markdown",
+        parents: ["sessions"],
+        appProperties: { brainhubKey: "shared" },
+      },
+    ].map((entry) => ({
+      ...entry,
+      size: "1",
+      modifiedTime: "2026-07-26T00:00:00.000Z",
+      version: "1",
+      trashed: false,
+    }));
+    const metadataGets: string[] = [];
+    const queries: string[] = [];
+    const pageSizes: number[] = [];
+    const client = {
+      files: {
+        list: async (request: { q?: string; pageSize?: number }) => {
+          const query = request.q ?? "";
+          queries.push(query);
+          pageSizes.push(request.pageSize ?? 0);
+          if (query.includes("appProperties has")) {
+            return {
+              data: {
+                files: entries.filter(
+                  (entry) => entry.appProperties.brainhubKey === "shared",
+                ),
+              },
+            };
+          }
+          const parent = /^'([^']+)' in parents/u.exec(query)?.[1];
+          return {
+            data: {
+              files: entries.filter((entry) =>
+                entry.parents.includes(parent ?? ""),
+              ),
+            },
+          };
+        },
+        get: async (request: { fileId?: string }) => {
+          metadataGets.push(request.fileId ?? "");
+          const entry = entries.find(
+            (candidate) => candidate.id === request.fileId,
+          );
+          if (!entry) throw new Error(`missing ${request.fileId}`);
+          return { data: entry, headers: { etag: "etag" } };
+        },
+      },
+    };
+    const drive = new GoogleDrive({
+      client: client as never,
+      rootFolderId: "root",
+    });
+
+    const result = await drive.list({
+      prefix: "inbox/",
+      appProperty: { key: "brainhubKey", value: "shared" },
+    });
+
+    expect(result.map((entry) => entry.path)).toEqual([
+      "inbox/device/inside.md",
+    ]);
+    expect(metadataGets).not.toContain("outside");
+    expect(queries.some((query) => query.includes("appProperties has"))).toBe(
+      false,
+    );
+    expect(pageSizes.every((pageSize) => pageSize === 1_000)).toBe(true);
+  });
+
+  it("lists candidates from every duplicate prefix folder", async () => {
+    const entries = [
+      {
+        id: "inbox-a",
+        name: "inbox",
+        mimeType: folderMimeType,
+        parents: ["root"],
+        appProperties: {},
+      },
+      {
+        id: "inbox-b",
+        name: "inbox",
+        mimeType: folderMimeType,
+        parents: ["root"],
+        appProperties: {},
+      },
+      {
+        id: "device-a",
+        name: "mac-a",
+        mimeType: folderMimeType,
+        parents: ["inbox-a"],
+        appProperties: {},
+      },
+      {
+        id: "device-b",
+        name: "mac-b",
+        mimeType: folderMimeType,
+        parents: ["inbox-b"],
+        appProperties: {},
+      },
+      {
+        id: "inside-a",
+        name: "candidate-a.md",
+        mimeType: "text/markdown",
+        parents: ["device-a"],
+        appProperties: { brainhubKey: "shared" },
+      },
+      {
+        id: "inside-b",
+        name: "candidate-b.md",
+        mimeType: "text/markdown",
+        parents: ["device-b"],
+        appProperties: { brainhubKey: "shared" },
+      },
+    ].map((entry) => ({
+      ...entry,
+      size: "1",
+      modifiedTime: "2026-07-26T00:00:00.000Z",
+      version: "1",
+      trashed: false,
+    }));
+    const client = {
+      files: {
+        list: async (request: { q?: string }) => {
+          const parent = /^'([^']+)' in parents/u.exec(request.q ?? "")?.[1];
+          return {
+            data: {
+              files: entries.filter((entry) =>
+                entry.parents.includes(parent ?? ""),
+              ),
+            },
+          };
+        },
+      },
+    };
+    const drive = new GoogleDrive({
+      client: client as never,
+      rootFolderId: "root",
+    });
+
+    const result = await drive.list({
+      prefix: "inbox/",
+      appProperty: { key: "brainhubKey", value: "shared" },
+    });
+
+    expect(result.map((entry) => entry.id).sort()).toEqual([
+      "inside-a",
+      "inside-b",
+    ]);
+  });
+
   it("reads a fixed file relative to the resolved My Drive root", async () => {
     const profile = {
       id: "profile-1",
@@ -98,7 +280,7 @@ describe("Google Drive boundary", () => {
 
     expect(result?.bytes.toString("utf8")).toBe("# Digital Twin\n");
     expect(listedParents).toContain(
-      "'my-drive-root' in parents and trashed = false",
+      "'my-drive-root' in parents and name = 'Digital_Twin_Profile.md' and trashed = false",
     );
   });
 

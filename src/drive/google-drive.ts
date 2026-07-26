@@ -93,6 +93,7 @@ export class GoogleDrive implements DrivePort {
     const existing = await client.files.list({
       q,
       fields: "files(id)",
+      pageSize: 1_000,
       spaces: "drive",
     });
     const id = existing.data.files?.[0]?.id;
@@ -142,6 +143,7 @@ export class GoogleDrive implements DrivePort {
       const response = await this.#client.files.list({
         q: `'${escapeQuery(parentId)}' in parents and trashed = false`,
         fields: `nextPageToken,files(${fileFields})`,
+        pageSize: 1_000,
         ...(pageToken ? { pageToken } : {}),
         spaces: "drive",
         includeItemsFromAllDrives: true,
@@ -153,18 +155,66 @@ export class GoogleDrive implements DrivePort {
     return files;
   }
 
+  async #namedChildren(
+    parentId: string,
+    name: string,
+  ): Promise<drive_v3.Schema$File[]> {
+    const files: drive_v3.Schema$File[] = [];
+    let pageToken: string | undefined;
+    do {
+      const response = await this.#client.files.list({
+        q: `'${escapeQuery(parentId)}' in parents and name = '${escapeQuery(name)}' and trashed = false`,
+        fields: `nextPageToken,files(${fileFields})`,
+        pageSize: 1_000,
+        ...(pageToken ? { pageToken } : {}),
+        spaces: "drive",
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
+      });
+      files.push(...(response.data.files ?? []));
+      pageToken = response.data.nextPageToken ?? undefined;
+    } while (pageToken);
+    return files
+      .filter((file) => file.name === name)
+      .sort((left, right) => String(right.id).localeCompare(String(left.id)));
+  }
+
+  async #namedChild(
+    parentId: string,
+    name: string,
+  ): Promise<drive_v3.Schema$File | null> {
+    return (await this.#namedChildren(parentId, name))[0] ?? null;
+  }
+
+  async #resolveAll(path: string): Promise<drive_v3.Schema$File[]> {
+    const segments = safePath(path).split("/");
+    let parentIds = [this.#rootFolderId];
+    let found: drive_v3.Schema$File[] = [];
+    for (const [index, segment] of segments.entries()) {
+      found = (
+        await Promise.all(
+          parentIds.map((parentId) => this.#namedChildren(parentId, segment)),
+        )
+      ).flat();
+      if (index < segments.length - 1) {
+        found = found.filter((file) => file.mimeType === folderMimeType);
+      }
+      const unique = new Map(
+        found.filter((file) => file.id).map((file) => [file.id!, file]),
+      );
+      found = [...unique.values()];
+      parentIds = [...unique.keys()];
+      if (parentIds.length === 0) return [];
+    }
+    return found;
+  }
+
   async #resolve(path: string): Promise<drive_v3.Schema$File | null> {
     const normalized = safePath(path);
     let parent = this.#rootFolderId;
     let found: drive_v3.Schema$File | null = null;
     for (const segment of normalized.split("/")) {
-      const children = await this.#children(parent);
-      found =
-        children
-          .filter((file) => file.name === segment)
-          .sort((left, right) =>
-            String(right.id).localeCompare(String(left.id)),
-          )[0] ?? null;
+      found = await this.#namedChild(parent, segment);
       if (!found?.id) return null;
       parent = found.id;
     }
@@ -230,10 +280,13 @@ export class GoogleDrive implements DrivePort {
     };
   }
 
-  async #walk(): Promise<Array<{ file: drive_v3.Schema$File; path: string }>> {
+  async #walkFrom(
+    rootId: string,
+    rootPath: string,
+  ): Promise<Array<{ file: drive_v3.Schema$File; path: string }>> {
     const output: Array<{ file: drive_v3.Schema$File; path: string }> = [];
     const queue: Array<{ id: string; path: string }> = [
-      { id: this.#rootFolderId, path: "" },
+      { id: rootId, path: rootPath },
     ];
     while (queue.length > 0) {
       const current = queue.shift()!;
@@ -247,14 +300,32 @@ export class GoogleDrive implements DrivePort {
     return output;
   }
 
+  async #walk(): Promise<Array<{ file: drive_v3.Schema$File; path: string }>> {
+    return this.#walkFrom(this.#rootFolderId, "");
+  }
+
   async list(query: DriveListQuery): Promise<DriveEntry[]> {
     if (query.prefix) safePath(query.prefix.replace(/\/$/u, "") || "invalid");
     let files: Array<{ file: drive_v3.Schema$File; path: string }>;
-    if (query.appProperty) {
+    if (query.prefix) {
+      const prefix = query.prefix.replace(/\/$/u, "");
+      const roots = await this.#resolveAll(prefix);
+      if (roots.length === 0) return [];
+      files = (
+        await Promise.all(
+          roots.map((root) =>
+            root.id && root.mimeType === folderMimeType
+              ? this.#walkFrom(root.id, prefix)
+              : Promise.resolve([{ file: root, path: prefix }]),
+          ),
+        )
+      ).flat();
+    } else if (query.appProperty) {
       const { key, value } = query.appProperty;
       const response = await this.#client.files.list({
         q: `appProperties has { key='${escapeQuery(key)}' and value='${escapeQuery(value)}' } and trashed = false`,
         fields: `files(${fileFields})`,
+        pageSize: 1_000,
         spaces: "drive",
         includeItemsFromAllDrives: true,
         supportsAllDrives: true,
@@ -275,6 +346,12 @@ export class GoogleDrive implements DrivePort {
     return Promise.all(
       files
         .filter(({ path }) => !query.prefix || path.startsWith(query.prefix))
+        .filter(
+          ({ file }) =>
+            !query.appProperty ||
+            file.appProperties?.[query.appProperty.key] ===
+              query.appProperty.value,
+        )
         .filter(
           ({ file }) =>
             !query.modifiedAfter ||

@@ -34,7 +34,7 @@ describe("image processing", () => {
     expect(result.artifacts).toHaveLength(1);
     expect(result.artifacts[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.artifacts[0]?.drivePath).toMatch(
-      /^images\/sha256\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/,
+      /^inbox\/_assets\/sha256\/[a-f0-9]{2}\/[a-f0-9]{64}\.webp$/,
     );
     expect(result.artifacts[0]?.bytes.subarray(0, 4).toString("ascii")).toBe(
       "RIFF",
