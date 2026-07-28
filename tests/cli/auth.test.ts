@@ -133,6 +133,7 @@ describe("Google auth CLI", () => {
     const secrets = new MemorySecretStore("old-credential");
     const staged = stagedAuthorization({ events });
     let beginCalls = 0;
+    let backfillCalls = 0;
 
     await runCli(
       ["node", "brain-mcp", "--config", configFile, "auth", "login", "--json"],
@@ -154,17 +155,36 @@ describe("Google auth CLI", () => {
           events.push("write-config");
           await writeConfig(path, config);
         },
+        runBackfill: async () => {
+          backfillCalls += 1;
+          events.push("backfill");
+          return {
+            sessions: 3,
+            bytes: 120,
+            confirmed: true,
+            uploaded: 3,
+            completed: true,
+          };
+        },
       },
     );
 
     expect(beginCalls).toBe(1);
-    expect(events).toEqual(["commit", "write-config"]);
+    expect(backfillCalls).toBe(1);
+    expect(events).toEqual(["commit", "write-config", "backfill"]);
     expect(staged.rollbacks()).toBe(0);
     expect(output).toHaveLength(1);
     expect(JSON.parse(output[0]!)).toEqual({
       authenticated: true,
       account: { email: "person@example.com", displayName: "Person" },
       drive: { rootFolderId: "root-1", rootFolderName: "brain-hub" },
+      backfill: {
+        sessions: 3,
+        bytes: 120,
+        confirmed: true,
+        uploaded: 3,
+        completed: true,
+      },
     });
     const persisted = await loadConfig({
       homeDir: "/unused",
@@ -195,6 +215,13 @@ describe("Google auth CLI", () => {
           getClient: async () => staged.session.client,
         }),
         driveFactory: () => connectedDrive() as never,
+        runBackfill: async () => ({
+          sessions: 0,
+          bytes: 0,
+          confirmed: true,
+          uploaded: 0,
+          completed: true,
+        }),
       },
     );
 

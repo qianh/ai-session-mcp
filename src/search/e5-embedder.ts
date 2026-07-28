@@ -1,6 +1,7 @@
 import { pipeline } from "@huggingface/transformers";
 
 import { normalizeVector, type Embedder } from "./embedder.js";
+import { markModelReady } from "./model-cache.js";
 
 interface TensorOutput {
   tolist(): number[][];
@@ -11,12 +12,19 @@ type Extractor = (
   options: { pooling: "mean"; normalize: true },
 ) => Promise<TensorOutput>;
 
+interface ModelProgress {
+  status?: string;
+  progress?: number;
+  file?: string;
+}
+
 export class E5Embedder implements Embedder {
   readonly model: string;
   readonly revision: string;
   readonly dimensions: number;
   readonly #cacheDir: string;
   #extractor: Promise<Extractor> | null = null;
+  #readyMarker: Promise<void> | null = null;
 
   constructor(options: {
     model: string;
@@ -30,19 +38,52 @@ export class E5Embedder implements Embedder {
     this.#cacheDir = options.cacheDir;
   }
 
-  async #load(): Promise<Extractor> {
+  async #load(
+    progress?: (value: { percent?: number; file?: string }) => void,
+  ): Promise<Extractor> {
     this.#extractor ??= (
       pipeline as unknown as (
         task: "feature-extraction",
         model: string,
-        options: { revision: string; dtype: "q8"; cache_dir: string },
+        options: {
+          revision: string;
+          dtype: "q8";
+          cache_dir: string;
+          progress_callback?: (value: ModelProgress) => void;
+        },
       ) => Promise<Extractor>
     )("feature-extraction", this.model, {
       revision: this.revision,
       dtype: "q8",
       cache_dir: this.#cacheDir,
+      ...(progress
+        ? {
+            progress_callback: (value: ModelProgress) => {
+              if (!value.status?.startsWith("progress")) return;
+              progress({
+                ...(typeof value.progress === "number"
+                  ? { percent: value.progress }
+                  : {}),
+                ...(value.file ? { file: value.file } : {}),
+              });
+            },
+          }
+        : {}),
     });
-    return this.#extractor;
+    const extractor = await this.#extractor;
+    this.#readyMarker ??= markModelReady(this.#cacheDir, {
+      model: this.model,
+      revision: this.revision,
+      dimensions: this.dimensions,
+    });
+    await this.#readyMarker;
+    return extractor;
+  }
+
+  async prepare(
+    progress?: (value: { percent?: number; file?: string }) => void,
+  ): Promise<void> {
+    await this.#load(progress);
   }
 
   async #embed(texts: string[]): Promise<number[][]> {

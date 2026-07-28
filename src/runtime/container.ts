@@ -1,6 +1,7 @@
+import { createRequire } from "node:module";
 import { hostname } from "node:os";
-import { dirname } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { mkdir, readdir, stat } from "node:fs/promises";
 
 import { google, type drive_v3 } from "googleapis";
 
@@ -12,7 +13,7 @@ import {
 } from "../auth/secret-store-factory.js";
 import type { BrainHubConfig, PlatformPaths } from "../domain/config.js";
 import { BrainHubError } from "../domain/errors.js";
-import type { SessionSource } from "../domain/session.js";
+import { conversationKey, type SessionSource } from "../domain/session.js";
 import type { DrivePort } from "../drive/drive-port.js";
 import { GoogleDrive } from "../drive/google-drive.js";
 import { MemoryDrive } from "../drive/memory-drive.js";
@@ -20,14 +21,28 @@ import {
   DIGITAL_TWIN_PROFILE_PATH,
   PortraitService,
 } from "../portrait/portrait-service.js";
+import { PortraitSyncService } from "../portrait/portrait-sync-service.js";
 import { SchedulerManager } from "../scheduler/manager.js";
 import { E5Embedder } from "../search/e5-embedder.js";
+import { isModelReady } from "../search/model-cache.js";
 import { SearchService } from "../search/search-service.js";
 import { SqliteStateStore } from "../state/sqlite-store.js";
 import type { DeviceState, SessionState, StateStore } from "../state/store.js";
 import { StatusService } from "../status/status-service.js";
+import { discoverPublishDirectory } from "../portrait/obsidian.js";
 import { UploadLock } from "../upload/lock.js";
 import { UploadService, type UploadOutput } from "../upload/upload-service.js";
+import {
+  FileUpdateCache,
+  UpdateCheckService,
+  fetchNpmLatestVersion,
+} from "../update/update-check-service.js";
+
+const packageMetadata = createRequire(import.meta.url)(
+  "../../package.json",
+) as {
+  version: string;
+};
 
 class VolatileStateStore implements StateStore {
   getOrCreateDevice(name: string): DeviceState {
@@ -55,6 +70,21 @@ const adapterStatusKey: Record<SessionSource, "claude" | "codex" | "grok"> = {
   codex: "codex",
   "grok-build": "grok",
 };
+
+async function directorySize(path: string): Promise<number> {
+  let total = 0;
+  try {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const child = `${path}/${entry.name}`;
+      total += entry.isDirectory()
+        ? await directorySize(child)
+        : (await stat(child)).size;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return total;
+}
 
 export class BrainHubRuntime {
   readonly config: BrainHubConfig;
@@ -96,7 +126,11 @@ export class BrainHubRuntime {
   }
 
   #state(): SqliteStateStore {
-    this.#stateStore ??= new SqliteStateStore(this.paths.stateFile);
+    this.#stateStore ??= new SqliteStateStore(this.paths.stateFile, {
+      ...(this.paths.legacyStateFile
+        ? { legacyPath: this.paths.legacyStateFile }
+        : {}),
+    });
     return this.#stateStore;
   }
 
@@ -105,7 +139,7 @@ export class BrainHubRuntime {
     if (!this.config.drive.rootFolderId) {
       throw new BrainHubError(
         "DRIVE_ROOT_REQUIRED",
-        "Run `brain-mcp drive init` first",
+        "Run `brainhub-mcp setup` first",
       );
     }
     const secrets = this.#secretStoreFactory({
@@ -165,7 +199,7 @@ export class BrainHubRuntime {
     includeSubagents?: boolean;
     dryRun?: boolean;
     backfill?: boolean;
-  }): Promise<UploadOutput & { adapters: object }> {
+  }): Promise<UploadOutput & { adapters: object; pending: number }> {
     const dryRun = input.dryRun ?? false;
     const state: StateStore = dryRun ? new VolatileStateStore() : this.#state();
     const sources = input.sources ?? ["claude-code", "codex", "grok-build"];
@@ -230,7 +264,11 @@ export class BrainHubRuntime {
     output.skippedSubagents = discovery.skippedSubagents;
     output.malformed = discovery.malformed;
     output.warnings.push(...discovery.warnings);
-    return { ...output, adapters: discovery.status };
+    return {
+      ...output,
+      adapters: discovery.status,
+      pending: dryRun ? 0 : state.listPending(10_000).length,
+    };
   }
 
   searchService(drive: DrivePort): SearchService {
@@ -242,6 +280,7 @@ export class BrainHubRuntime {
         dimensions: this.config.search.dimensions,
         cacheDir: this.paths.modelCache,
       }),
+      indexPath: this.paths.searchIndexFile,
       chunkTokens: this.config.search.chunkTokens,
       chunkOverlap: this.config.search.chunkOverlap,
     });
@@ -267,9 +306,61 @@ export class BrainHubRuntime {
     });
   }
 
+  async getSession(input: {
+    source: SessionSource;
+    conversationId: string;
+  }): Promise<{
+    source: SessionSource;
+    conversationId: string;
+    content: string;
+    updatedAt: string;
+  }> {
+    const drive = await this.drive(false);
+    const entries = await drive.list({
+      prefix: "inbox/",
+      appProperty: {
+        key: "brainhubKey",
+        value: conversationKey(input.source, input.conversationId),
+      },
+    });
+    const entry = entries
+      .filter(
+        (candidate) =>
+          candidate.path.startsWith("inbox/") &&
+          candidate.mimeType === "text/markdown" &&
+          candidate.appProperties.source === input.source &&
+          candidate.appProperties.conversationId === input.conversationId,
+      )
+      .sort(
+        (left, right) =>
+          (right.appProperties.updatedAt ?? right.modifiedTime).localeCompare(
+            left.appProperties.updatedAt ?? left.modifiedTime,
+          ) || right.id.localeCompare(left.id),
+      )[0];
+    if (!entry) {
+      throw new BrainHubError(
+        "SESSION_NOT_FOUND",
+        `Inbox session ${input.source}/${input.conversationId} is not available`,
+      );
+    }
+    const object = await drive.read(entry.id);
+    return {
+      source: input.source,
+      conversationId: input.conversationId,
+      content: object.bytes.toString("utf8"),
+      updatedAt: entry.appProperties.updatedAt ?? entry.modifiedTime,
+    };
+  }
+
   async portraitService(): Promise<PortraitService> {
     return new PortraitService({
-      drive: await this.drive(false),
+      drive: await this.#myDrive(),
+      path: DIGITAL_TWIN_PROFILE_PATH,
+    });
+  }
+
+  async portraitSyncService(): Promise<PortraitSyncService> {
+    return new PortraitSyncService({
       portraitSource: {
         drive: await this.#myDrive(),
         path: DIGITAL_TWIN_PROFILE_PATH,
@@ -288,8 +379,8 @@ export class BrainHubRuntime {
   async getPortrait() {
     return (await this.portraitService()).getPortrait();
   }
-  async pullPortrait() {
-    return (await this.portraitService()).pullPortrait();
+  async syncPortrait() {
+    return (await this.portraitSyncService()).sync();
   }
 
   async hubStatus() {
@@ -300,9 +391,65 @@ export class BrainHubRuntime {
       args: this.executableArgs,
     });
     return new StatusService({
+      account: {
+        connected: Boolean(this.config.drive.accountPermissionId),
+        ...(this.config.drive.accountEmail
+          ? { email: this.config.drive.accountEmail }
+          : {}),
+        ...(this.config.drive.accountDisplayName
+          ? { displayName: this.config.drive.accountDisplayName }
+          : {}),
+      },
+      root: {
+        configured: Boolean(this.config.drive.rootFolderId),
+        name: this.config.drive.rootFolderName,
+        ...(this.config.drive.rootFolderId
+          ? { id: this.config.drive.rootFolderId }
+          : {}),
+      },
       drive: () => this.drive(false),
-      adapters: async () => (await this.discover({})).status,
-      scheduler: () => scheduler.status(),
+      upload: async () => (await this.discover({})).status,
+      model: async () => {
+        const bytes = await directorySize(this.paths.modelCache);
+        const ready = await isModelReady(this.paths.modelCache, {
+          model: this.config.search.model,
+          revision: this.config.search.modelRevision,
+          dimensions: this.config.search.dimensions,
+        });
+        return { ready, bytes, cachePath: this.paths.modelCache };
+      },
+      index: async () => this.searchService(await this.drive(false)).status(),
+      launchd: () => scheduler.status(),
+      portrait: async () => {
+        const portrait = await (
+          await this.#myDrive()
+        ).readPath(DIGITAL_TWIN_PROFILE_PATH);
+        return portrait
+          ? { available: true, modifiedAt: portrait.modifiedTime }
+          : { available: false };
+      },
+      obsidian: async () => {
+        const path = await discoverPublishDirectory({
+          platform: this.platform,
+          homeDir: this.homeDir,
+          fallbackPath: this.config.publish.fallbackPath,
+          ...(process.env.XDG_CONFIG_HOME
+            ? { xdgConfigHome: process.env.XDG_CONFIG_HOME }
+            : {}),
+        });
+        return path ? { configured: true, path } : { configured: false };
+      },
+      update: () =>
+        new UpdateCheckService({
+          currentVersion: packageMetadata.version,
+          cache: new FileUpdateCache(
+            join(
+              dirname(dirname(dirname(this.paths.stateFile))),
+              "update-check.json",
+            ),
+          ),
+          fetchLatest: fetchNpmLatestVersion,
+        }).check(),
     }).getStatus();
   }
 

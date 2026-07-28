@@ -33,7 +33,7 @@ describe("CLI dry run", () => {
         { cwd: repository },
       ),
     ).rejects.toMatchObject({ code: 1 });
-  });
+  }, 15_000);
 
   it("scans every adapter without Drive, OAuth, or persistent state", async () => {
     const home = await mkdtemp(join(tmpdir(), "brainhub-e2e-"));

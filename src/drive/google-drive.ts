@@ -6,6 +6,7 @@ import type { drive_v3 } from "googleapis";
 import { BrainHubError } from "../domain/errors.js";
 import type {
   DriveEntry,
+  DriveChanges,
   DriveListQuery,
   DriveObject,
   DrivePort,
@@ -17,6 +18,15 @@ const folderMimeType = "application/vnd.google-apps.folder";
 const googleDocumentMimeType = "application/vnd.google-apps.document";
 const fileFields =
   "id,name,mimeType,parents,size,modifiedTime,appProperties,version,trashed";
+
+export class DriveRootConflictError extends BrainHubError {
+  constructor(readonly candidates: string[]) {
+    super(
+      "DRIVE_ROOT_CONFLICT",
+      `Multiple brain-hub folders exist; choose one of: ${candidates.join(", ")}`,
+    );
+  }
+}
 
 function safePath(value: string): string {
   if (!value || value.startsWith("/") || value.includes("\\")) {
@@ -54,6 +64,13 @@ function headerValue(headers: unknown, name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function isMissingOrOutsideRoot(error: unknown): boolean {
+  return (
+    (error instanceof BrainHubError && error.code === "INVALID_INPUT") ||
+    (error as { code?: unknown } | null)?.code === 404
+  );
+}
+
 export class GoogleDrive implements DrivePort {
   readonly #client: drive_v3.Drive;
   readonly #rootFolderId: string;
@@ -88,18 +105,29 @@ export class GoogleDrive implements DrivePort {
   static async createRoot(
     client: drive_v3.Drive,
     name: string,
+    selectedId?: string,
   ): Promise<string> {
-    const q = `name = '${escapeQuery(name)}' and mimeType = '${folderMimeType}' and trashed = false`;
+    const q = `'root' in parents and name = '${escapeQuery(name)}' and mimeType = '${folderMimeType}' and trashed = false`;
     const existing = await client.files.list({
       q,
       fields: "files(id)",
       pageSize: 1_000,
       spaces: "drive",
     });
-    const id = existing.data.files?.[0]?.id;
-    if (id) return id;
+    const candidates = (existing.data.files ?? [])
+      .flatMap((file) => (file.id ? [file.id] : []))
+      .sort();
+    if (selectedId) {
+      if (candidates.includes(selectedId)) return selectedId;
+      throw new BrainHubError(
+        "INVALID_INPUT",
+        `Selected Drive root ${selectedId} is not a matching ${name} folder`,
+      );
+    }
+    if (candidates.length > 1) throw new DriveRootConflictError(candidates);
+    if (candidates[0]) return candidates[0];
     const created = await client.files.create({
-      requestBody: { name, mimeType: folderMimeType },
+      requestBody: { name, mimeType: folderMimeType, parents: ["root"] },
       fields: "id",
     });
     if (!created.data.id)
@@ -359,6 +387,103 @@ export class GoogleDrive implements DrivePort {
         )
         .map(({ file, path }) => this.#entry(file, path)),
     );
+  }
+
+  async changes(query: {
+    prefix: string;
+    cursor?: string;
+  }): Promise<DriveChanges> {
+    const prefix = safePath(query.prefix.replace(/\/$/u, "") || "invalid");
+    const normalizedPrefix = `${prefix}/`;
+    if (query.cursor === undefined) {
+      const token = await this.#client.changes.getStartPageToken({
+        supportsAllDrives: true,
+      });
+      if (!token.data.startPageToken) {
+        throw new Error("Google Drive did not return a change cursor");
+      }
+      return {
+        entries: await this.list({ prefix: normalizedPrefix }),
+        removedIds: [],
+        cursor: token.data.startPageToken,
+        reset: true,
+      };
+    }
+
+    const entries = new Map<string, DriveEntry>();
+    const removedIds = new Set<string>();
+    let pageToken: string | undefined = query.cursor;
+    let cursor = query.cursor;
+    let requiresReset = false;
+    try {
+      do {
+        const response: {
+          data: {
+            changes?: drive_v3.Schema$Change[];
+            nextPageToken?: string | null;
+            newStartPageToken?: string | null;
+          };
+        } = await this.#client.changes.list({
+          pageToken,
+          fields: `nextPageToken,newStartPageToken,changes(fileId,removed,file(${fileFields}))`,
+          pageSize: 1_000,
+          spaces: "drive",
+          includeItemsFromAllDrives: true,
+          supportsAllDrives: true,
+        });
+        for (const change of response.data.changes ?? []) {
+          const id = change.fileId ?? change.file?.id;
+          if (!id) continue;
+          if (change.file?.mimeType === folderMimeType) {
+            requiresReset = true;
+            continue;
+          }
+          if (change.removed || change.file?.trashed) {
+            entries.delete(id);
+            removedIds.add(id);
+            continue;
+          }
+          try {
+            const path = await this.#pathFor(id);
+            if (!path.startsWith(normalizedPrefix)) {
+              entries.delete(id);
+              removedIds.add(id);
+              continue;
+            }
+            const metadata = change.file ?? (await this.#metadata(id));
+            entries.set(id, await this.#entry(metadata, path));
+            removedIds.delete(id);
+          } catch (error) {
+            if (!isMissingOrOutsideRoot(error)) throw error;
+            entries.delete(id);
+            removedIds.add(id);
+          }
+        }
+        pageToken = response.data.nextPageToken ?? undefined;
+        cursor = response.data.newStartPageToken ?? pageToken ?? cursor;
+      } while (pageToken);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 410) {
+        return this.changes({ prefix: normalizedPrefix });
+      }
+      throw error;
+    }
+    if (requiresReset) {
+      return {
+        entries: await this.list({ prefix: normalizedPrefix }),
+        removedIds: [],
+        cursor,
+        reset: true,
+      };
+    }
+    return {
+      entries: [...entries.values()].sort((left, right) =>
+        left.path.localeCompare(right.path),
+      ),
+      removedIds: [...removedIds].sort(),
+      cursor,
+      reset: false,
+    };
   }
 
   async #pathFor(id: string): Promise<string> {

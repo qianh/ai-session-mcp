@@ -4,68 +4,79 @@ import { MemoryDrive } from "../../src/drive/memory-drive.js";
 import { StatusService } from "../../src/status/status-service.js";
 
 describe("hub status", () => {
-  it("aggregates live quota, inbox, distill, and last valid capacity", async () => {
+  it("returns only the supported account, data, and local component status", async () => {
     const drive = new MemoryDrive();
     await drive.put({
       path: "inbox/mac/a.md",
       bytes: Buffer.from("a"),
       mimeType: "text/markdown",
     });
-    await drive.put({
-      path: "inbox/linux/b.md",
-      bytes: Buffer.from("bb"),
-      mimeType: "text/markdown",
-    });
-    await drive.put({
-      path: "inbox/_assets/sha256/ab/image.webp",
-      bytes: Buffer.from("image"),
-      mimeType: "image/webp",
-    });
-    await drive.put({
-      path: "_meta/distill-status.json",
-      bytes: Buffer.from(
-        JSON.stringify({ schema_version: 1, daily: { status: "success" } }),
-      ),
-      mimeType: "application/json",
-    });
-    await drive.put({
-      path: "_meta/capacity.jsonl",
-      bytes: Buffer.from(
-        '{"schema_version":1,"timestamp":"2026-07-18T00:00:00.000Z","used_bytes":3}\ninvalid\n',
-      ),
-      mimeType: "application/jsonl",
-    });
     const service = new StatusService({
+      account: { connected: true, email: "person@example.com" },
+      root: { configured: true, id: "root-1", name: "brain-hub" },
       drive,
-      adapters: async () => ({ codex: { available: true } }),
-      scheduler: async () => ({ installed: false }),
+      upload: async () => ({ codex: { discovered: 1 } }),
+      model: async () => ({ ready: true, bytes: 1024 }),
+      index: async () => ({ ready: true, documents: 1, cursor: "10" }),
+      launchd: async () => ({ installed: true }),
+      portrait: async () => ({ available: true }),
+      obsidian: async () => ({ configured: false }),
+      update: async () => ({
+        currentVersion: "0.1.0",
+        latestVersion: "0.2.0",
+        updateAvailable: true,
+      }),
     });
 
     const result = await service.getStatus();
-    expect(result.drive).toMatchObject({ reachable: true });
-    expect(result.inbox).toEqual({ linux: 1, mac: 1 });
-    expect(result.distill).toMatchObject({ schema_version: 1 });
-    expect(result.capacity).toMatchObject({ used_bytes: 3 });
-    expect(result.adapters).toMatchObject({ codex: { available: true } });
-    expect(result.warnings).toContainEqual(
-      expect.objectContaining({ code: "MALFORMED_CAPACITY_LINE" }),
-    );
+
+    expect(result).toMatchObject({
+      account: { connected: true, email: "person@example.com" },
+      root: { configured: true, id: "root-1", name: "brain-hub" },
+      upload: { inbox: { mac: 1 }, adapters: { codex: { discovered: 1 } } },
+      model: { ready: true, bytes: 1024 },
+      index: { ready: true, documents: 1, cursor: "10" },
+      launchd: { installed: true },
+      portrait: { available: true },
+      obsidian: { configured: false },
+      update: {
+        currentVersion: "0.1.0",
+        latestVersion: "0.2.0",
+        updateAvailable: true,
+      },
+    });
+    expect(result).not.toHaveProperty("distill");
+    expect(result).not.toHaveProperty("weekly");
+    expect(result).not.toHaveProperty("capacity");
   });
 
-  it("returns local status when Drive initialization fails", async () => {
+  it("keeps local component status when Drive is unavailable", async () => {
     const service = new StatusService({
+      account: { connected: false },
+      root: { configured: false, name: "brain-hub" },
       drive: async () => {
         throw new Error("Drive is not configured");
       },
-      adapters: async () => ({ codex: { available: true } }),
-      scheduler: async () => ({ installed: false }),
+      upload: async () => ({ codex: { discovered: 1 } }),
+      model: async () => ({ ready: false, bytes: 0 }),
+      index: async () => ({ ready: false, documents: 0 }),
+      launchd: async () => ({ installed: false }),
+      portrait: async () => ({ available: false }),
+      obsidian: async () => ({ configured: false }),
+      update: async () => ({
+        currentVersion: "0.1.0",
+        updateAvailable: false,
+      }),
     });
 
     const result = await service.getStatus();
 
-    expect(result.drive).toEqual({ reachable: false });
-    expect(result.adapters).toEqual({ codex: { available: true } });
-    expect(result.scheduler).toEqual({ installed: false });
+    expect(result.upload).toMatchObject({
+      driveReachable: false,
+      inbox: {},
+      adapters: { codex: { discovered: 1 } },
+    });
+    expect(result.model).toEqual({ ready: false, bytes: 0 });
     expect(result.warnings).toContainEqual(
       expect.objectContaining({ code: "DRIVE_UNAVAILABLE" }),
     );

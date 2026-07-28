@@ -93,4 +93,125 @@ describe("SQLite state store", () => {
     );
     expect(store.getDiscoveryWatermark("grok-build")).toBeNull();
   });
+
+  it("records a declined backfill and starts every source at the decision time", async () => {
+    const store = await createStore();
+    const decidedAt = "2026-07-28T02:00:00.000Z";
+
+    store.recordBackfillDecision({
+      decision: "declined",
+      sessions: 12,
+      bytes: 4096,
+      decidedAt,
+    });
+
+    expect(store.getBackfillState()).toEqual({
+      decision: "declined",
+      sessions: 12,
+      bytes: 4096,
+      uploaded: 0,
+      decidedAt,
+      completedAt: decidedAt,
+    });
+    expect(store.getDiscoveryWatermark("claude-code")).toBe(decidedAt);
+    expect(store.getDiscoveryWatermark("codex")).toBe(decidedAt);
+    expect(store.getDiscoveryWatermark("grok-build")).toBe(decidedAt);
+  });
+
+  it("keeps accepted backfill incomplete until no retryable uploads remain", async () => {
+    const store = await createStore();
+    store.recordBackfillDecision({
+      decision: "accepted",
+      sessions: 3,
+      bytes: 2048,
+      decidedAt: "2026-07-28T02:00:00.000Z",
+    });
+
+    store.recordBackfillUpload({
+      uploaded: 2,
+      pending: 1,
+      recordedAt: "2026-07-28T02:01:00.000Z",
+    });
+    expect(store.getBackfillState()).toMatchObject({
+      uploaded: 2,
+      completedAt: null,
+    });
+
+    store.recordBackfillUpload({
+      uploaded: 1,
+      pending: 0,
+      recordedAt: "2026-07-28T02:02:00.000Z",
+    });
+    expect(store.getBackfillState()).toMatchObject({
+      uploaded: 3,
+      completedAt: "2026-07-28T02:02:00.000Z",
+    });
+  });
+
+  it("migrates legacy upload state into an account-scoped database once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "brainhub-state-migrate-"));
+    const legacyPath = join(directory, "state.sqlite");
+    const scopedPath = join(directory, "accounts", "account-a", "state.sqlite");
+    const secondScopedPath = join(
+      directory,
+      "accounts",
+      "account-b",
+      "state.sqlite",
+    );
+    const legacy = new SqliteStateStore(legacyPath);
+    const oldDevice = legacy.getOrCreateDevice("macbook");
+    legacy.markPending({
+      conversationKey: "legacy-key",
+      source: "codex",
+      conversationId: "legacy-conversation",
+      sourcePath: "/sessions/legacy.jsonl",
+      sourceUpdatedAt: "2026-07-26T08:20:00.000Z",
+      contentSha256: "c".repeat(64),
+    });
+    legacy.markUploaded("legacy-key", "drive-file", "2026-07-26T08:25:00.000Z");
+    legacy.setDiscoveryWatermark("codex", "2026-07-26T08:27:00.000Z");
+    legacy.close();
+
+    const premature = new SqliteStateStore(scopedPath);
+    premature.getOrCreateDevice("macbook");
+    premature.setDiscoveryWatermark("codex", "2026-07-27T01:36:00.000Z");
+    premature.close();
+
+    type MigratingStoreConstructor = new (
+      path: string,
+      options: { legacyPath: string },
+    ) => SqliteStateStore;
+    const MigratingStore = SqliteStateStore as MigratingStoreConstructor;
+    const migrated = new MigratingStore(scopedPath, { legacyPath });
+    try {
+      expect(migrated.getOrCreateDevice("macbook").id).toBe(oldDevice.id);
+      expect(migrated.getSession("legacy-key")).toMatchObject({
+        status: "uploaded",
+        driveFileId: "drive-file",
+      });
+      expect(migrated.getDiscoveryWatermark("codex")).toBe(
+        "2026-07-26T08:27:00.000Z",
+      );
+      migrated.setDiscoveryWatermark("codex", "2026-07-27T02:00:00.000Z");
+    } finally {
+      migrated.close();
+    }
+
+    const secondAccount = new MigratingStore(secondScopedPath, { legacyPath });
+    try {
+      expect(secondAccount.getSession("legacy-key")).toBeNull();
+      expect(secondAccount.getDiscoveryWatermark("codex")).toBeNull();
+    } finally {
+      secondAccount.close();
+    }
+
+    const reopened = new MigratingStore(scopedPath, { legacyPath });
+    try {
+      expect(reopened.getDiscoveryWatermark("codex")).toBe(
+        "2026-07-27T02:00:00.000Z",
+      );
+    } finally {
+      reopened.close();
+    }
+  });
 });

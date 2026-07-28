@@ -8,6 +8,16 @@ import type { CommandSpec } from "../runtime/command.js";
 export type ClientName = "claude" | "codex" | "grok";
 export type ClientAction = "install" | "uninstall";
 
+export function launchWithConfig(
+  launch: CommandSpec,
+  configFile: string,
+): CommandSpec {
+  return {
+    command: launch.command,
+    args: [...launch.args, "--config", configFile],
+  };
+}
+
 export function clientMutation(
   client: ClientName,
   action: ClientAction,

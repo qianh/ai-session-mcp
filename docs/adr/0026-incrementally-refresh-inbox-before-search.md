@@ -1,0 +1,3 @@
+# Incrementally refresh inbox before search
+
+Before each `search_sessions` query, BrainHub MCP consumes a locally persisted Google Drive change cursor and updates the local index for created, modified, moved, or deleted session content under `inbox/`. Ordinary file changes remain incremental. A folder change triggers a replacement listing of the indexed `inbox/` subtree because Google does not emit a change for every descendant. Only explicit deletion, trashing, or movement outside the root becomes a removal; transient metadata or path errors fail the refresh without advancing the cursor. On failure, search uses the last valid local index and returns `index_status: "stale"` with a warning instead of presenting stale results as current.

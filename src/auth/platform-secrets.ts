@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 
+import { BrainHubError } from "../domain/errors.js";
 import type { SecretStore } from "./secret-store.js";
 
 export type CommandRunner = (
@@ -42,33 +43,27 @@ export class PlatformSecretStore implements SecretStore {
     runner?: CommandRunner;
   }) {
     this.#platform = options.platform ?? process.platform;
-    this.#service = options.service ?? "brain-mcp-google-oauth";
+    this.#service = options.service ?? "brainhub-mcp-google-oauth";
     this.#account = options.account;
     this.#runner = options.runner ?? defaultRunner;
-    if (this.#platform !== "darwin" && this.#platform !== "linux") {
-      throw new Error(`Unsupported secret store platform: ${this.#platform}`);
+    if (this.#platform !== "darwin") {
+      throw new BrainHubError(
+        "PLATFORM_UNSUPPORTED",
+        "BrainHub MCP v1 supports macOS only",
+      );
     }
   }
 
   async get(): Promise<string | null> {
     try {
-      const output =
-        this.#platform === "darwin"
-          ? await this.#runner("security", [
-              "find-generic-password",
-              "-s",
-              this.#service,
-              "-a",
-              this.#account,
-              "-w",
-            ])
-          : await this.#runner("secret-tool", [
-              "lookup",
-              "service",
-              this.#service,
-              "account",
-              this.#account,
-            ]);
+      const output = await this.#runner("security", [
+        "find-generic-password",
+        "-s",
+        this.#service,
+        "-a",
+        this.#account,
+        "-w",
+      ]);
       return output.trim() || null;
     } catch {
       return null;
@@ -76,55 +71,30 @@ export class PlatformSecretStore implements SecretStore {
   }
 
   async set(value: string): Promise<void> {
-    if (this.#platform === "darwin") {
-      await this.#runner("security", [
-        "add-generic-password",
-        "-U",
-        "-s",
-        this.#service,
-        "-a",
-        this.#account,
-        "-w",
-        value,
-      ]);
-      return;
-    }
-    await this.#runner(
-      "secret-tool",
-      [
-        "store",
-        `--label=BrainHub Google OAuth`,
-        "service",
-        this.#service,
-        "account",
-        this.#account,
-      ],
+    await this.#runner("security", [
+      "add-generic-password",
+      "-U",
+      "-s",
+      this.#service,
+      "-a",
+      this.#account,
+      "-w",
       value,
-    );
+    ]);
   }
 
   async delete(): Promise<void> {
     try {
-      if (this.#platform === "darwin") {
-        await this.#runner("security", [
-          "delete-generic-password",
-          "-s",
-          this.#service,
-          "-a",
-          this.#account,
-        ]);
-      } else {
-        await this.#runner("secret-tool", [
-          "clear",
-          "service",
-          this.#service,
-          "account",
-          this.#account,
-        ]);
-      }
+      await this.#runner("security", [
+        "delete-generic-password",
+        "-s",
+        this.#service,
+        "-a",
+        this.#account,
+      ]);
     } catch (error) {
       const exitCode = (error as { exitCode?: unknown }).exitCode;
-      if (this.#platform === "darwin" && exitCode === 44) return;
+      if (exitCode === 44) return;
       throw error;
     }
   }

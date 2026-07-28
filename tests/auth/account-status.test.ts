@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveGoogleAccountStatus } from "../../src/auth/account-status.js";
+import {
+  resolveGoogleAccountStatus,
+  resolveReusableGoogleAccount,
+} from "../../src/auth/account-status.js";
 import { createDefaultConfig } from "../../src/domain/config.js";
 
 function config() {
@@ -116,5 +119,45 @@ describe("Google account status", () => {
       account: { email: "new@example.com" },
       configuredAccount: { email: "old@example.com" },
     });
+  });
+
+  it("only reuses a stored setup binding after live credential validation", async () => {
+    const connected = config();
+    connected.drive.rootFolderId = "root-1";
+    connected.drive.accountEmail = "person@example.com";
+    connected.drive.accountDisplayName = "Person";
+    connected.drive.accountPermissionId = "permission-1";
+
+    await expect(
+      resolveReusableGoogleAccount({
+        config: connected,
+        credential: "revoked-token",
+        loadAccount: async () => {
+          throw new Error("revoked");
+        },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      resolveReusableGoogleAccount({
+        config: connected,
+        credential: "valid-token-for-another-account",
+        loadAccount: async () => ({
+          email: "other@example.com",
+          displayName: "Other",
+          permissionId: "permission-2",
+        }),
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      resolveReusableGoogleAccount({
+        config: connected,
+        credential: "valid-token",
+        loadAccount: async () => ({
+          email: "person@example.com",
+          displayName: "Person",
+          permissionId: "permission-1",
+        }),
+      }),
+    ).resolves.toEqual({ email: "person@example.com" });
   });
 });

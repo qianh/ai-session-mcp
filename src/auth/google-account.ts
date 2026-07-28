@@ -38,12 +38,14 @@ export async function connectGoogleAccount(options: {
   authClient: GoogleOAuthClient;
   drive: (auth: GoogleOAuthClient) => drive_v3.Drive;
   rootFolderName: string;
+  rootFolderId?: string;
 }): Promise<GoogleAccountConnection> {
   const client = options.drive(options.authClient);
   const account = await readGoogleDriveAccount(client);
   const rootFolderId = await GoogleDrive.createRoot(
     client,
     options.rootFolderName,
+    options.rootFolderId,
   );
   return { account, rootFolderId };
 }

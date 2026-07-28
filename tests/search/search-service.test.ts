@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { describe, expect, it, vi } from "vitest";
 
 import { MemoryDrive } from "../../src/drive/memory-drive.js";
 import type { Embedder } from "../../src/search/embedder.js";
@@ -10,11 +14,11 @@ class SemanticEmbedder implements Embedder {
   readonly dimensions = 3;
 
   async embedQuery(text: string): Promise<number[]> {
-    return this.#vector(text.replace(/^query:\s*/u, ""));
+    return this.#vector(text);
   }
 
   async embedPassages(texts: string[]): Promise<number[][]> {
-    return texts.map((text) => this.#vector(text.replace(/^passage:\s*/u, "")));
+    return texts.map((text) => this.#vector(text));
   }
 
   #vector(text: string): number[] {
@@ -26,6 +30,55 @@ class SemanticEmbedder implements Embedder {
     ];
     const norm = Math.hypot(...raw) || 1;
     return raw.map((value) => value / norm);
+  }
+}
+
+class UnavailableEmbedder implements Embedder {
+  readonly model = "unavailable-test";
+  readonly revision = "v1";
+  readonly dimensions = 3;
+
+  async embedQuery(): Promise<number[]> {
+    throw new Error("model unavailable");
+  }
+
+  async embedPassages(): Promise<number[][]> {
+    throw new Error("model unavailable");
+  }
+}
+
+class RecoveringEmbedder implements Embedder {
+  readonly model = "recovering-test";
+  readonly revision = "v1";
+  readonly dimensions = 3;
+  available = false;
+
+  async embedQuery(): Promise<number[]> {
+    if (!this.available) throw new Error("model unavailable");
+    return [1, 0, 0];
+  }
+
+  async embedPassages(texts: string[]): Promise<number[][]> {
+    if (!this.available) throw new Error("model unavailable");
+    return texts.map(() => [1, 0, 0]);
+  }
+}
+
+class ConfigurableEmbedder implements Embedder {
+  readonly model = "structural-test";
+  readonly revision = "v1";
+
+  constructor(readonly dimensions: number) {}
+
+  async embedQuery(): Promise<number[]> {
+    return [1, ...Array.from({ length: this.dimensions - 1 }, () => 0)];
+  }
+
+  async embedPassages(texts: string[]): Promise<number[][]> {
+    return texts.map(() => [
+      1,
+      ...Array.from({ length: this.dimensions - 1 }, () => 0),
+    ]);
   }
 }
 
@@ -47,110 +100,244 @@ ${fields.text}
 `);
 }
 
-describe("hybrid search", () => {
-  it("indexes Drive content, finds semantic matches, and deduplicates conversations", async () => {
+async function indexPath(): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "brainhub-search-"));
+  return join(directory, "index.sqlite");
+}
+
+describe("local hybrid search", () => {
+  it("indexes only inbox content in local SQLite without writing to Drive", async () => {
     const drive = new MemoryDrive();
-    const contentSha = "a".repeat(64);
+    const driveWrite = vi.spyOn(drive, "upsert");
     await drive.put({
       path: "inbox/mac/codex.md",
       bytes: markdown({
         source: "codex",
         conversationId: "conversation-1",
-        contentSha,
+        contentSha: "a".repeat(64),
         text: "Use a canary rollout for production.",
       }),
       mimeType: "text/markdown",
     });
     await drive.put({
-      path: "sessions/2026-07/codex.md",
+      path: "sessions/2026-07/legacy.md",
       bytes: markdown({
         source: "codex",
-        conversationId: "conversation-1",
-        contentSha,
-        text: "Use a canary rollout for production.",
+        conversationId: "legacy-session",
+        contentSha: "b".repeat(64),
+        text: "Release the legacy session.",
       }),
       mimeType: "text/markdown",
-    });
-    const search = new SearchService({
-      drive,
-      embedder: new SemanticEmbedder(),
-    });
-
-    const result = await search.search({
-      query: "release strategy",
-      limit: 10,
-    });
-
-    expect(result.indexStatus).toBe("fresh");
-    expect(result.results).toHaveLength(1);
-    expect(result.results[0]).toMatchObject({
-      kind: "session",
-      conversationId: "conversation-1",
-      source: "codex",
-    });
-    expect(
-      await drive.readPath("_meta/search/v1/manifest.json"),
-    ).not.toBeNull();
-    expect(
-      (await drive.list({ prefix: "_meta/search/v1/objects/" })).map(
-        (entry) => entry.path,
-      ),
-    ).toHaveLength(2);
-  });
-
-  it("reports a stale index when refresh fails but an old manifest is usable", async () => {
-    const drive = new MemoryDrive();
-    const search = new SearchService({
-      drive,
-      embedder: new SemanticEmbedder(),
-    });
-    await search.sync();
-    const brokenDrive = new Proxy(drive, {
-      get(target, property, receiver) {
-        if (property === "list")
-          return async () => Promise.reject(new Error("offline"));
-        const value = Reflect.get(target, property, receiver) as unknown;
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-    const stale = new SearchService({
-      drive: brokenDrive as never,
-      embedder: new SemanticEmbedder(),
-    });
-    const result = await stale.search({ query: "release", limit: 10 });
-    expect(result.indexStatus).toBe("stale");
-    expect(result.warnings[0]?.code).toBe("INDEX_STALE");
-  });
-
-  it("rebuilds a corrupt vector object during sync", async () => {
-    const drive = new MemoryDrive();
-    const contentSha = "c".repeat(64);
-    await drive.put({
-      path: "sessions/2026-07/session.md",
-      bytes: markdown({
-        source: "codex",
-        conversationId: "repair-me",
-        contentSha,
-        text: "database migration",
-      }),
-      mimeType: "text/markdown",
-    });
-    const vectorPath = `_meta/search/v1/objects/session/2026-07/${contentSha}.vec`;
-    await drive.put({
-      path: vectorPath,
-      bytes: Buffer.from("corrupt"),
-      mimeType: "application/vnd.brainhub.vector+json",
     });
     const service = new SearchService({
       drive,
       embedder: new SemanticEmbedder(),
+      indexPath: await indexPath(),
+    });
+
+    const result = await service.search({
+      query: "release strategy",
+      limit: 10,
+    });
+
+    expect(result).toMatchObject({
+      indexStatus: "fresh",
+      searchMode: "semantic",
+      results: [
+        {
+          source: "codex",
+          conversationId: "conversation-1",
+        },
+      ],
+    });
+    expect(result.results[0]).not.toHaveProperty("driveFileId");
+    expect(result.results[0]).not.toHaveProperty("kind");
+    expect(driveWrite).not.toHaveBeenCalled();
+    expect(await drive.list({ prefix: "_meta/search/" })).toEqual([]);
+  });
+
+  it("uses the last local index and warns when Drive refresh fails", async () => {
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "inbox/mac/codex.md",
+      bytes: markdown({
+        source: "codex",
+        conversationId: "conversation-1",
+        contentSha: "c".repeat(64),
+        text: "Database migration with SQLite.",
+      }),
+      mimeType: "text/markdown",
+    });
+    const path = await indexPath();
+    await new SearchService({
+      drive,
+      embedder: new SemanticEmbedder(),
+      indexPath: path,
+    }).sync();
+    const brokenDrive = new Proxy(drive, {
+      get(target, property, receiver) {
+        if (property === "changes") {
+          return async () => Promise.reject(new Error("offline"));
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const result = await new SearchService({
+      drive: brokenDrive as never,
+      embedder: new SemanticEmbedder(),
+      indexPath: path,
+    }).search({ query: "sqlite", limit: 10 });
+
+    expect(result.indexStatus).toBe("stale");
+    expect(result.results[0]?.conversationId).toBe("conversation-1");
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "INDEX_STALE" }),
+    );
+  });
+
+  it("persists and resumes the Drive change cursor", async () => {
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "inbox/mac/codex.md",
+      bytes: markdown({
+        source: "codex",
+        conversationId: "incremental-session",
+        contentSha: "e".repeat(64),
+        text: "First revision.",
+      }),
+      mimeType: "text/markdown",
+    });
+    const read = vi.spyOn(drive, "read");
+    const service = new SearchService({
+      drive,
+      embedder: new SemanticEmbedder(),
+      indexPath: await indexPath(),
     });
 
     await service.sync();
-    const repaired = await drive.readPath(vectorPath);
-    expect(repaired?.bytes.toString()).not.toBe("corrupt");
-    await expect(
-      service.search({ query: "sqlite", limit: 10 }),
-    ).resolves.toMatchObject({ indexStatus: "fresh" });
+    await service.sync();
+    expect(read).toHaveBeenCalledTimes(1);
+
+    await drive.upsert({
+      path: "inbox/mac/codex.md",
+      bytes: markdown({
+        source: "codex",
+        conversationId: "incremental-session",
+        contentSha: "f".repeat(64),
+        text: "Second revision.",
+      }),
+      mimeType: "text/markdown",
+    });
+    await service.sync();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back explicitly to keyword search when the model is unavailable", async () => {
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "inbox/mac/codex.md",
+      bytes: markdown({
+        source: "codex",
+        conversationId: "keyword-session",
+        contentSha: "d".repeat(64),
+        text: "The launch checklist contains a rollback step.",
+      }),
+      mimeType: "text/markdown",
+    });
+    const service = new SearchService({
+      drive,
+      embedder: new UnavailableEmbedder(),
+      indexPath: await indexPath(),
+    });
+
+    const result = await service.search({ query: "rollback", limit: 10 });
+
+    expect(result.searchMode).toBe("keyword");
+    expect(result.results[0]?.conversationId).toBe("keyword-session");
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({ code: "MODEL_UNAVAILABLE_KEYWORD_FALLBACK" }),
+    );
+  });
+
+  it("rebuilds missing vectors after a temporarily unavailable model recovers", async () => {
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "inbox/mac/recover.md",
+      bytes: markdown({
+        source: "codex",
+        conversationId: "recovery-session",
+        contentSha: "1".repeat(64),
+        text: "Release recovery procedure.",
+      }),
+      mimeType: "text/markdown",
+    });
+    const embedder = new RecoveringEmbedder();
+    const service = new SearchService({
+      drive,
+      embedder,
+      indexPath: await indexPath(),
+    });
+
+    const degraded = await service.search({ query: "release", limit: 10 });
+    embedder.available = true;
+    const recovered = await service.search({ query: "release", limit: 10 });
+
+    expect(degraded.searchMode).toBe("keyword");
+    expect(recovered).toMatchObject({
+      indexStatus: "fresh",
+      searchMode: "semantic",
+      results: [{ conversationId: "recovery-session" }],
+    });
+  });
+
+  it.each([
+    {
+      label: "embedding dimensions",
+      first: { dimensions: 3, chunkTokens: 448, chunkOverlap: 64 },
+      second: { dimensions: 4, chunkTokens: 448, chunkOverlap: 64 },
+    },
+    {
+      label: "chunk size",
+      first: { dimensions: 3, chunkTokens: 448, chunkOverlap: 64 },
+      second: { dimensions: 3, chunkTokens: 320, chunkOverlap: 64 },
+    },
+    {
+      label: "chunk overlap",
+      first: { dimensions: 3, chunkTokens: 448, chunkOverlap: 64 },
+      second: { dimensions: 3, chunkTokens: 448, chunkOverlap: 32 },
+    },
+  ])("rebuilds the index when $label changes", async ({ first, second }) => {
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "inbox/mac/structural.md",
+      bytes: markdown({
+        source: "codex",
+        conversationId: "structural-session",
+        contentSha: "2".repeat(64),
+        text: "Database release notes.",
+      }),
+      mimeType: "text/markdown",
+    });
+    const path = await indexPath();
+    await new SearchService({
+      drive,
+      embedder: new ConfigurableEmbedder(first.dimensions),
+      indexPath: path,
+      chunkTokens: first.chunkTokens,
+      chunkOverlap: first.chunkOverlap,
+    }).sync();
+    const read = vi.spyOn(drive, "read");
+
+    await new SearchService({
+      drive,
+      embedder: new ConfigurableEmbedder(second.dimensions),
+      indexPath: path,
+      chunkTokens: second.chunkTokens,
+      chunkOverlap: second.chunkOverlap,
+    }).sync();
+
+    expect(read).toHaveBeenCalledTimes(1);
   });
 });

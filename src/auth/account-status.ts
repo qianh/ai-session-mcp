@@ -56,3 +56,17 @@ export async function resolveGoogleAccountStatus(options: {
     };
   }
 }
+
+export async function resolveReusableGoogleAccount(
+  options: Parameters<typeof resolveGoogleAccountStatus>[0],
+): Promise<{ email: string } | null> {
+  const status = await resolveGoogleAccountStatus(options);
+  if (
+    !status.authenticated ||
+    !status.identityMatches ||
+    !status.drive.configured
+  ) {
+    return null;
+  }
+  return { email: status.account.email };
+}

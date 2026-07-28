@@ -6,10 +6,30 @@ import { describe, expect, it } from "vitest";
 
 import {
   clientMutation,
+  launchWithConfig,
   mergeClaudeDesktopConfig,
 } from "../../src/clients/registry.js";
 
 describe("MCP client registration", () => {
+  it("preserves a custom config path in the registered server launch", () => {
+    expect(
+      launchWithConfig(
+        {
+          command: "/usr/local/bin/node",
+          args: ["/opt/brain-mcp/dist/cli/index.js"],
+        },
+        "/custom/config.toml",
+      ),
+    ).toEqual({
+      command: "/usr/local/bin/node",
+      args: [
+        "/opt/brain-mcp/dist/cli/index.js",
+        "--config",
+        "/custom/config.toml",
+      ],
+    });
+  });
+
   it("uses exact argument arrays without shell interpolation", () => {
     const launch = {
       command: "/usr/local/bin/node",

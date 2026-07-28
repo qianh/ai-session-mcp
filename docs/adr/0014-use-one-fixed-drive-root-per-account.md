@@ -1,0 +1,3 @@
+# Use one fixed Drive root per account
+
+BrainHub MCP uses a `brain-hub` folder located directly under My Drive as the captured-content root for each Google account. It reuses an unambiguous folder regardless of component installation order and does not offer an arbitrary root path. The separately generated portrait remains at My Drive root `/Digital_Twin_Profile.md`. If multiple root-level `brain-hub` folders exist, MCP operations stop until the user selects the canonical folder; MCP never guesses, merges, or deletes folders automatically. The selected folder ID is part of the local state binding, so explicitly rebinding the same account to another candidate cannot reuse upload or search state from the previous root.

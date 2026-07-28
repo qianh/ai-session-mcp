@@ -15,7 +15,11 @@ describe("MCP protocol", () => {
         warnings: [],
       }),
       getPortrait: async () => ({ portrait: "profile" }),
-      pullPortrait: async () => ({ portrait: "profile" }),
+      getSession: async () => ({
+        source: "codex",
+        conversationId: "session-1",
+        content: "complete session",
+      }),
       hubStatus: async () => ({ drive: { reachable: true } }),
     };
     const server = createMcpServer(services);
@@ -31,11 +35,23 @@ describe("MCP protocol", () => {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
         "get_portrait",
+        "get_session",
         "hub_status",
-        "pull_portrait",
         "search_sessions",
         "upload_sessions",
       ]);
+      const sessionTool = tools.tools.find(
+        (tool) => tool.name === "get_session",
+      );
+      expect(sessionTool?.inputSchema).toMatchObject({
+        required: ["source", "conversation_id"],
+      });
+      const searchTool = tools.tools.find(
+        (tool) => tool.name === "search_sessions",
+      );
+      expect(searchTool?.inputSchema.properties).not.toHaveProperty(
+        "include_original",
+      );
       const invalid = await client.callTool({
         name: "search_sessions",
         arguments: { query: "" },

@@ -34,24 +34,14 @@ describe("platform secret storage", () => {
     expect(calls[0]?.input).toBeUndefined();
   });
 
-  it("uses Linux Secret Service", async () => {
-    const calls: Array<{
-      command: string;
-      args: string[];
-      input: string | undefined;
-    }> = [];
-    const store = new PlatformSecretStore({
-      platform: "linux",
-      account: "default",
-      runner: async (command, args, input) => {
-        calls.push({ command, args, input });
-        return args[0] === "lookup" ? "saved-token" : "";
-      },
-    });
-    await store.set("secret");
-    expect(await store.get()).toBe("saved-token");
-    expect(calls.every((call) => call.command === "secret-tool")).toBe(true);
-    expect(calls[0]?.input).toBe("secret");
+  it("rejects non-macOS secret storage", () => {
+    expect(
+      () =>
+        new PlatformSecretStore({
+          platform: "linux",
+          account: "default",
+        }),
+    ).toThrow("BrainHub MCP v1 supports macOS only");
   });
 
   it("uses a stable credential account per resolved config file", () => {
@@ -64,11 +54,16 @@ describe("platform secret storage", () => {
   });
 
   it("migrates a legacy device credential to the config-specific account", async () => {
-    const values = new Map<string, string>([["same-device", "legacy-token"]]);
+    const service = "brainhub-mcp-google-oauth";
+    const values = new Map<string, string>([
+      [`${service}:same-device`, "legacy-token"],
+    ]);
     const runner: CommandRunner = async (_command, args) => {
+      const requestedService = args[args.indexOf("-s") + 1];
       const account = args[args.indexOf("-a") + 1];
+      const key = `${requestedService}:${account}`;
       if (args[0] === "find-generic-password") {
-        if (account && values.has(account)) return `${values.get(account)}\n`;
+        if (values.has(key)) return `${values.get(key)}\n`;
         const error = new Error("item not found") as Error & {
           exitCode: number;
         };
@@ -76,11 +71,11 @@ describe("platform secret storage", () => {
         throw error;
       }
       if (args[0] === "add-generic-password" && account) {
-        values.set(account, args.at(-1)!);
+        values.set(key, args.at(-1)!);
         return "";
       }
       if (args[0] === "delete-generic-password" && account) {
-        values.delete(account);
+        values.delete(key);
         return "";
       }
       throw new Error("unexpected command");
@@ -94,8 +89,50 @@ describe("platform secret storage", () => {
     });
 
     expect(await store.get()).toBe("legacy-token");
-    expect(values.get(credentialStoreAccount(configFile))).toBe("legacy-token");
-    expect(values.has("same-device")).toBe(false);
+    expect(values.get(`${service}:${credentialStoreAccount(configFile)}`)).toBe(
+      "legacy-token",
+    );
+    expect(values.has(`${service}:same-device`)).toBe(false);
+  });
+
+  it("migrates a credential stored under the pre-rename service", async () => {
+    const configFile = "/tmp/renamed/config.toml";
+    const account = credentialStoreAccount(configFile);
+    const oldKey = `brain-mcp-google-oauth:${account}`;
+    const newKey = `brainhub-mcp-google-oauth:${account}`;
+    const values = new Map<string, string>([[oldKey, "legacy-token"]]);
+    const runner: CommandRunner = async (_command, args) => {
+      const service = args[args.indexOf("-s") + 1];
+      const requestedAccount = args[args.indexOf("-a") + 1];
+      const key = `${service}:${requestedAccount}`;
+      if (args[0] === "find-generic-password") {
+        if (values.has(key)) return `${values.get(key)}\n`;
+        const error = new Error("item not found") as Error & {
+          exitCode: number;
+        };
+        error.exitCode = 44;
+        throw error;
+      }
+      if (args[0] === "add-generic-password") {
+        values.set(key, args.at(-1)!);
+        return "";
+      }
+      if (args[0] === "delete-generic-password") {
+        values.delete(key);
+        return "";
+      }
+      throw new Error("unexpected command");
+    };
+    const store = createConfigSecretStore({
+      platform: "darwin",
+      configFile,
+      legacyAccount: "same-device",
+      runner,
+    });
+
+    expect(await store.get()).toBe("legacy-token");
+    expect(values.get(newKey)).toBe("legacy-token");
+    expect(values.has(oldKey)).toBe(false);
   });
 
   it("ignores a missing Keychain item but propagates other delete failures", async () => {

@@ -26,6 +26,28 @@ export interface SessionState extends PendingSession {
   lastErrorCode: string | null;
 }
 
+export interface BackfillState {
+  decision: "accepted" | "declined";
+  sessions: number;
+  bytes: number;
+  uploaded: number;
+  decidedAt: string;
+  completedAt: string | null;
+}
+
+export interface BackfillDecisionInput {
+  decision: BackfillState["decision"];
+  sessions: number;
+  bytes: number;
+  decidedAt: string;
+}
+
+export interface BackfillUploadInput {
+  uploaded: number;
+  pending: number;
+  recordedAt: string;
+}
+
 export interface StateStore {
   getOrCreateDevice(name: string): DeviceState;
   markPending(session: PendingSession): boolean;

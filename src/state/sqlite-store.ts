@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 import Database from "better-sqlite3";
 
 import type {
+  BackfillDecisionInput,
+  BackfillState,
+  BackfillUploadInput,
   DeviceState,
   PendingSession,
   SessionState,
@@ -46,12 +49,13 @@ function mapSession(row: SessionRow): SessionState {
 export class SqliteStateStore implements StateStore {
   readonly #database: Database.Database;
 
-  constructor(path: string) {
+  constructor(path: string, options: { legacyPath?: string } = {}) {
     mkdirSync(dirname(path), { recursive: true });
     this.#database = new Database(path);
     this.#database.pragma("journal_mode = WAL");
     this.#database.pragma("foreign_keys = ON");
     this.#migrate();
+    if (options.legacyPath) this.#migrateLegacy(options.legacyPath, path);
   }
 
   #migrate(): void {
@@ -82,7 +86,103 @@ export class SqliteStateStore implements StateStore {
         source TEXT PRIMARY KEY,
         scanned_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS state_migrations (
+        name TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS setup_backfill (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        decision TEXT NOT NULL CHECK (decision IN ('accepted', 'declined')),
+        sessions INTEGER NOT NULL,
+        bytes INTEGER NOT NULL,
+        uploaded INTEGER NOT NULL DEFAULT 0,
+        decided_at TEXT NOT NULL,
+        completed_at TEXT
+      );
     `);
+  }
+
+  #migrateLegacy(legacyPath: string, currentPath: string): void {
+    const migration = "legacy-account-state-v1";
+    const sourceClaim = `${migration}-claimed`;
+    if (
+      resolve(legacyPath) === resolve(currentPath) ||
+      !existsSync(legacyPath)
+    ) {
+      return;
+    }
+
+    this.#database.prepare("ATTACH DATABASE ? AS legacy_state").run(legacyPath);
+    try {
+      const requiredTables = ["device", "sessions", "discovery_watermarks"];
+      const available = new Set(
+        (
+          this.#database
+            .prepare(
+              "SELECT name FROM legacy_state.sqlite_master WHERE type = 'table'",
+            )
+            .all() as Array<{ name: string }>
+        ).map((row) => row.name),
+      );
+      if (!requiredTables.every((table) => available.has(table))) return;
+
+      this.#database.exec(`
+        CREATE TABLE IF NOT EXISTS legacy_state.state_migrations (
+          name TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        );
+      `);
+      const targetAlreadyMigrated = Boolean(
+        this.#database
+          .prepare("SELECT 1 FROM state_migrations WHERE name = ?")
+          .get(migration),
+      );
+      if (targetAlreadyMigrated) {
+        this.#database
+          .prepare(
+            "INSERT OR IGNORE INTO legacy_state.state_migrations(name, applied_at) VALUES (?, ?)",
+          )
+          .run(sourceClaim, new Date().toISOString());
+        return;
+      }
+
+      this.#database.transaction(() => {
+        const claimed = this.#database
+          .prepare(
+            "INSERT OR IGNORE INTO legacy_state.state_migrations(name, applied_at) VALUES (?, ?)",
+          )
+          .run(sourceClaim, new Date().toISOString());
+        if (claimed.changes === 0) return;
+        this.#database.exec(`
+          INSERT OR REPLACE INTO device(singleton, id, name, created_at)
+          SELECT singleton, id, name, created_at FROM legacy_state.device;
+
+          INSERT OR IGNORE INTO sessions(
+            conversation_key, source, conversation_id, source_path,
+            source_updated_at, content_sha256, status, attempts, retryable,
+            drive_file_id, uploaded_at, last_error_code
+          )
+          SELECT
+            conversation_key, source, conversation_id, source_path,
+            source_updated_at, content_sha256, status, attempts, retryable,
+            drive_file_id, uploaded_at, last_error_code
+          FROM legacy_state.sessions;
+
+          INSERT INTO discovery_watermarks(source, scanned_at)
+          SELECT source, scanned_at FROM legacy_state.discovery_watermarks
+          WHERE true
+          ON CONFLICT(source) DO UPDATE SET scanned_at =
+            MIN(discovery_watermarks.scanned_at, excluded.scanned_at);
+        `);
+        this.#database
+          .prepare(
+            "INSERT INTO state_migrations(name, applied_at) VALUES (?, ?)",
+          )
+          .run(migration, new Date().toISOString());
+      })();
+    } finally {
+      this.#database.exec("DETACH DATABASE legacy_state");
+    }
   }
 
   getOrCreateDevice(name: string): DeviceState {
@@ -237,6 +337,64 @@ export class SqliteStateStore implements StateStore {
       `,
       )
       .run(source, scannedAt);
+  }
+
+  getBackfillState(): BackfillState | null {
+    const row = this.#database
+      .prepare(
+        `
+          SELECT decision, sessions, bytes, uploaded,
+                 decided_at AS decidedAt, completed_at AS completedAt
+          FROM setup_backfill WHERE singleton = 1
+        `,
+      )
+      .get() as BackfillState | undefined;
+    return row ?? null;
+  }
+
+  recordBackfillDecision(input: BackfillDecisionInput): void {
+    this.#database.transaction(() => {
+      const inserted = this.#database
+        .prepare(
+          `
+            INSERT OR IGNORE INTO setup_backfill(
+              singleton, decision, sessions, bytes, uploaded,
+              decided_at, completed_at
+            ) VALUES (1, ?, ?, ?, 0, ?, ?)
+          `,
+        )
+        .run(
+          input.decision,
+          input.sessions,
+          input.bytes,
+          input.decidedAt,
+          input.decision === "declined" ? input.decidedAt : null,
+        );
+      if (inserted.changes === 0 || input.decision !== "declined") return;
+      const watermark = this.#database.prepare(`
+        INSERT INTO discovery_watermarks(source, scanned_at) VALUES (?, ?)
+        ON CONFLICT(source) DO UPDATE SET scanned_at = excluded.scanned_at
+      `);
+      for (const source of ["claude-code", "codex", "grok-build"] as const) {
+        watermark.run(source, input.decidedAt);
+      }
+    })();
+  }
+
+  recordBackfillUpload(input: BackfillUploadInput): void {
+    const updated = this.#database
+      .prepare(
+        `
+          UPDATE setup_backfill
+          SET uploaded = uploaded + ?,
+              completed_at = CASE WHEN ? = 0 THEN ? ELSE completed_at END
+          WHERE singleton = 1 AND decision = 'accepted'
+        `,
+      )
+      .run(input.uploaded, input.pending, input.recordedAt);
+    if (updated.changes === 0) {
+      throw new Error("Accepted backfill decision is required before upload");
+    }
   }
 
   close(): void {

@@ -10,6 +10,8 @@ import {
   GoogleOAuth,
   googleAuthorizationOptions,
   parseOAuthClientConfig,
+  readOAuthClientConfig,
+  revokeGoogleCredential,
 } from "../../src/auth/google-oauth.js";
 import type { SecretStore } from "../../src/auth/secret-store.js";
 
@@ -192,5 +194,46 @@ describe("Google OAuth", () => {
     expect(() => parseOAuthClientConfig({ web: { client_id: "id" } })).toThrow(
       /OAuth client file is incomplete/,
     );
+  });
+
+  it("uses the OAuth client bundled in official release artifacts", async () => {
+    await expect(
+      readOAuthClientConfig("", {
+        clientId: "official.apps.googleusercontent.com",
+        clientSecret: "official-secret",
+        redirectUris: ["http://127.0.0.1"],
+      }),
+    ).resolves.toEqual({
+      clientId: "official.apps.googleusercontent.com",
+      clientSecret: "official-secret",
+      redirectUris: ["http://127.0.0.1"],
+    });
+    await expect(
+      readOAuthClientConfig("", {
+        clientId: "__BRAINHUB_GOOGLE_OAUTH_CLIENT_ID__",
+        clientSecret: "__BRAINHUB_GOOGLE_OAUTH_CLIENT_SECRET__",
+        redirectUris: ["http://127.0.0.1"],
+      }),
+    ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+  });
+
+  it("revokes the stored Google refresh token", async () => {
+    let request: { url: string; init?: RequestInit } | undefined;
+    const revoked = await revokeGoogleCredential(
+      JSON.stringify({
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+      }),
+      async (url, init) => {
+        request = { url: String(url), ...(init ? { init } : {}) };
+        return { ok: true } as Response;
+      },
+    );
+
+    expect(revoked).toBe(true);
+    expect(request?.url).toBe("https://oauth2.googleapis.com/revoke");
+    expect(request?.init?.method).toBe("POST");
+    expect(String(request?.init?.body)).toContain("token=refresh-token");
+    await expect(revokeGoogleCredential("not-json")).resolves.toBe(false);
   });
 });

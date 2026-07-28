@@ -62,6 +62,195 @@ function createConcurrentDriveClient() {
 }
 
 describe("Google Drive boundary", () => {
+  it("uses Drive change tokens for incremental inbox refresh", async () => {
+    const entries = [
+      {
+        id: "inbox",
+        name: "inbox",
+        mimeType: folderMimeType,
+        parents: ["root"],
+      },
+      {
+        id: "device",
+        name: "mac",
+        mimeType: folderMimeType,
+        parents: ["inbox"],
+      },
+      {
+        id: "inside",
+        name: "session.md",
+        mimeType: "text/markdown",
+        parents: ["device"],
+      },
+    ].map((entry) => ({
+      ...entry,
+      size: "1",
+      modifiedTime: "2026-07-26T00:00:00.000Z",
+      appProperties: {},
+      version: "1",
+      trashed: false,
+    }));
+    const changeTokens: string[] = [];
+    const client = {
+      files: {
+        list: async (request: { q?: string }) => {
+          const parent = /^'([^']+)' in parents/u.exec(request.q ?? "")?.[1];
+          return {
+            data: {
+              files: entries.filter((entry) =>
+                entry.parents.includes(parent ?? ""),
+              ),
+            },
+          };
+        },
+        get: async (request: { fileId?: string }) => ({
+          data: entries.find((entry) => entry.id === request.fileId),
+        }),
+      },
+      changes: {
+        getStartPageToken: async () => ({ data: { startPageToken: "10" } }),
+        list: async (request: { pageToken?: string }) => {
+          changeTokens.push(request.pageToken ?? "");
+          return {
+            data: {
+              changes: [
+                { fileId: "inside", file: entries[2] },
+                { fileId: "deleted", removed: true },
+              ],
+              newStartPageToken: "11",
+            },
+          };
+        },
+      },
+    };
+    const drive = new GoogleDrive({
+      client: client as never,
+      rootFolderId: "root",
+    });
+
+    const initial = await drive.changes({ prefix: "inbox/" });
+    const incremental = await drive.changes({
+      prefix: "inbox/",
+      cursor: initial.cursor,
+    });
+
+    expect(initial).toMatchObject({ cursor: "10", reset: true });
+    expect(initial.entries.map((entry) => entry.id)).toEqual(["inside"]);
+    expect(incremental).toMatchObject({
+      cursor: "11",
+      reset: false,
+      removedIds: ["deleted"],
+    });
+    expect(incremental.entries.map((entry) => entry.id)).toEqual(["inside"]);
+    expect(changeTokens).toEqual(["10"]);
+  });
+
+  it("fails an incremental refresh on transient metadata errors", async () => {
+    const transient = Object.assign(new Error("rate limited"), { code: 429 });
+    const client = {
+      files: {
+        get: async () => {
+          throw transient;
+        },
+      },
+      changes: {
+        list: async () => ({
+          data: {
+            changes: [
+              {
+                fileId: "session",
+                file: {
+                  id: "session",
+                  name: "session.md",
+                  mimeType: "text/markdown",
+                  parents: ["inbox"],
+                  trashed: false,
+                },
+              },
+            ],
+            newStartPageToken: "11",
+          },
+        }),
+      },
+    };
+    const drive = new GoogleDrive({
+      client: client as never,
+      rootFolderId: "root",
+    });
+
+    await expect(
+      drive.changes({ prefix: "inbox/", cursor: "10" }),
+    ).rejects.toBe(transient);
+  });
+
+  it("rebuilds the indexed subtree when a folder changes", async () => {
+    const entries = [
+      {
+        id: "inbox",
+        name: "inbox",
+        mimeType: folderMimeType,
+        parents: ["root"],
+      },
+      {
+        id: "device",
+        name: "mac",
+        mimeType: folderMimeType,
+        parents: ["inbox"],
+      },
+      {
+        id: "inside",
+        name: "session.md",
+        mimeType: "text/markdown",
+        parents: ["device"],
+      },
+    ].map((entry) => ({
+      ...entry,
+      size: "1",
+      modifiedTime: "2026-07-26T00:00:00.000Z",
+      appProperties: {},
+      version: "1",
+      trashed: false,
+    }));
+    const client = {
+      files: {
+        list: async (request: { q?: string }) => {
+          const parent = /^'([^']+)' in parents/u.exec(request.q ?? "")?.[1];
+          return {
+            data: {
+              files: entries.filter((entry) =>
+                entry.parents.includes(parent ?? ""),
+              ),
+            },
+          };
+        },
+      },
+      changes: {
+        list: async () => ({
+          data: {
+            changes: [{ fileId: "device", file: entries[1] }],
+            newStartPageToken: "11",
+          },
+        }),
+      },
+    };
+    const drive = new GoogleDrive({
+      client: client as never,
+      rootFolderId: "root",
+    });
+
+    const changes = await drive.changes({
+      prefix: "inbox/",
+      cursor: "10",
+    });
+
+    expect(changes).toMatchObject({
+      cursor: "11",
+      reset: true,
+      removedIds: [],
+    });
+    expect(changes.entries.map((entry) => entry.id)).toEqual(["inside"]);
+  });
+
   it("scopes app-property listing to the requested prefix subtree", async () => {
     const entries = [
       {
@@ -325,9 +514,13 @@ describe("Google Drive boundary", () => {
 
   it("reuses an existing named root folder", async () => {
     let createCalls = 0;
+    let query = "";
     const client = {
       files: {
-        list: async () => ({ data: { files: [{ id: "existing-root" }] } }),
+        list: async (request: { q: string }) => {
+          query = request.q;
+          return { data: { files: [{ id: "existing-root" }] } };
+        },
         create: async () => {
           createCalls += 1;
           return { data: { id: "new-root" } };
@@ -339,6 +532,46 @@ describe("Google Drive boundary", () => {
       GoogleDrive.createRoot(client as never, "brain-hub"),
     ).resolves.toBe("existing-root");
     expect(createCalls).toBe(0);
+    expect(query).toContain("'root' in parents");
+  });
+
+  it("creates a missing BrainHub folder explicitly under My Drive root", async () => {
+    let parents: string[] | undefined;
+    const client = {
+      files: {
+        list: async () => ({ data: { files: [] } }),
+        create: async (request: { requestBody?: { parents?: string[] } }) => {
+          parents = request.requestBody?.parents;
+          return { data: { id: "new-root" } };
+        },
+      },
+    };
+
+    await expect(
+      GoogleDrive.createRoot(client as never, "brain-hub"),
+    ).resolves.toBe("new-root");
+    expect(parents).toEqual(["root"]);
+  });
+
+  it("requires an explicit choice when duplicate root folders exist", async () => {
+    const client = {
+      files: {
+        list: async () => ({
+          data: { files: [{ id: "root-a" }, { id: "root-b" }] },
+        }),
+        create: async () => ({ data: { id: "new-root" } }),
+      },
+    };
+
+    await expect(
+      GoogleDrive.createRoot(client as never, "brain-hub"),
+    ).rejects.toMatchObject({
+      code: "DRIVE_ROOT_CONFLICT",
+      candidates: ["root-a", "root-b"],
+    });
+    await expect(
+      GoogleDrive.createRoot(client as never, "brain-hub", "root-b"),
+    ).resolves.toBe("root-b");
   });
 
   it("requires an explicit BrainHub root", () => {

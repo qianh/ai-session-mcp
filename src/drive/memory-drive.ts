@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type {
   DriveEntry,
+  DriveChanges,
   DriveListQuery,
   DriveObject,
   DrivePort,
@@ -17,6 +18,8 @@ export class MemoryDrive implements DrivePort {
   readonly #objects = new Map<string, StoredObject>();
   readonly #corruptReads: boolean;
   #counter = 0;
+  #changeCounter = 0;
+  readonly #changes: Array<{ sequence: number; id: string }> = [];
 
   constructor(options: { corruptReads?: boolean } = {}) {
     this.#corruptReads = options.corruptReads ?? false;
@@ -53,6 +56,11 @@ export class MemoryDrive implements DrivePort {
     };
   }
 
+  #recordChange(id: string): void {
+    this.#changeCounter += 1;
+    this.#changes.push({ sequence: this.#changeCounter, id });
+  }
+
   async list(query: DriveListQuery): Promise<DriveEntry[]> {
     return [...this.#objects.values()]
       .filter((object) => !object.trashed)
@@ -78,6 +86,7 @@ export class MemoryDrive implements DrivePort {
   async put(input: DrivePutInput): Promise<DriveEntry> {
     const object = this.#create(input);
     this.#objects.set(object.id, object);
+    this.#recordChange(object.id);
     return this.#entry(object);
   }
 
@@ -94,7 +103,49 @@ export class MemoryDrive implements DrivePort {
     }
     const object = this.#create(input, existing?.id);
     this.#objects.set(object.id, object);
+    this.#recordChange(object.id);
     return this.#entry(object);
+  }
+
+  async changes(query: {
+    prefix: string;
+    cursor?: string;
+  }): Promise<DriveChanges> {
+    if (query.cursor === undefined) {
+      return {
+        entries: await this.list({ prefix: query.prefix }),
+        removedIds: [],
+        cursor: String(this.#changeCounter),
+        reset: true,
+      };
+    }
+    const sequence = Number(query.cursor);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error("Invalid Drive change cursor");
+    }
+    const changedIds = new Set(
+      this.#changes
+        .filter((change) => change.sequence > sequence)
+        .map((change) => change.id),
+    );
+    const entries: DriveEntry[] = [];
+    const removedIds: string[] = [];
+    for (const id of changedIds) {
+      const object = this.#objects.get(id);
+      if (object && !object.trashed && object.path.startsWith(query.prefix)) {
+        entries.push(this.#entry(object));
+      } else {
+        removedIds.push(id);
+      }
+    }
+    entries.sort((left, right) => left.path.localeCompare(right.path));
+    removedIds.sort();
+    return {
+      entries,
+      removedIds,
+      cursor: String(this.#changeCounter),
+      reset: false,
+    };
   }
 
   async read(id: string): Promise<DriveObject> {
@@ -120,12 +171,16 @@ export class MemoryDrive implements DrivePort {
       throw new Error(`Drive object not found: ${id}`);
     object.path = path;
     object.modifiedTime = new Date().toISOString();
+    this.#recordChange(object.id);
     return this.#entry(object);
   }
 
   async trash(id: string): Promise<void> {
     const object = this.#objects.get(id);
-    if (object) object.trashed = true;
+    if (object) {
+      object.trashed = true;
+      this.#recordChange(object.id);
+    }
   }
 
   async quota(): Promise<DriveQuota> {

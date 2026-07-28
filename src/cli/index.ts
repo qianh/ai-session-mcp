@@ -3,19 +3,27 @@
 import { readdir, rm, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 
 import { Command } from "commander";
 import { google, type drive_v3 } from "googleapis";
 
-import { resolveGoogleAccountStatus } from "../auth/account-status.js";
+import {
+  resolveGoogleAccountStatus,
+  resolveReusableGoogleAccount,
+} from "../auth/account-status.js";
 import {
   applyGoogleConnection,
   clearGoogleConnection,
   connectGoogleAccount,
   readGoogleDriveAccount,
 } from "../auth/google-account.js";
-import { GoogleOAuth, type GoogleOAuthClient } from "../auth/google-oauth.js";
+import {
+  GoogleOAuth,
+  revokeGoogleCredential,
+  type GoogleOAuthClient,
+} from "../auth/google-oauth.js";
 import {
   createConfigSecretStore,
   type ConfigSecretStoreFactory,
@@ -23,6 +31,7 @@ import {
 import type { SecretStore } from "../auth/secret-store.js";
 import {
   ClientRegistry,
+  launchWithConfig,
   mergeClaudeDesktopConfig,
   type ClientName,
 } from "../clients/registry.js";
@@ -31,10 +40,23 @@ import {
   writeConfig,
   type LoadedConfig,
 } from "../domain/config-io.js";
+import { BrainHubError } from "../domain/errors.js";
 import type { SessionSource } from "../domain/session.js";
 import { serveMcp } from "../mcp/server.js";
 import { BrainHubRuntime } from "../runtime/container.js";
 import { SchedulerManager } from "../scheduler/manager.js";
+import { E5Embedder } from "../search/e5-embedder.js";
+import {
+  BackfillService,
+  type BackfillResult,
+} from "../setup/backfill-service.js";
+import { SetupService } from "../setup/setup-service.js";
+import {
+  UninstallService,
+  localCleanupTargets,
+} from "../setup/uninstall-service.js";
+import { discoverPublishDirectory } from "../portrait/obsidian.js";
+import { SqliteStateStore } from "../state/sqlite-store.js";
 
 export interface CliDependencies {
   writeOutput?: (value: string) => void;
@@ -45,6 +67,14 @@ export interface CliDependencies {
   ) => Pick<GoogleOAuth, "beginInteractiveAuthorization" | "getClient">;
   driveFactory?: (auth: GoogleOAuthClient) => drive_v3.Drive;
   writeConfig?: typeof writeConfig;
+  runBackfill?: (options: {
+    yes: boolean;
+    json: boolean;
+  }) => Promise<BackfillResult>;
+}
+
+export function isAffirmativeConfirmation(value: string): boolean {
+  return ["y", "yes"].includes(value.trim().toLowerCase());
 }
 
 function sourceList(value: string): SessionSource[] {
@@ -99,10 +129,10 @@ export async function runCli(
   const program = new Command();
   const launch = {
     command: process.execPath,
-    args: [resolve(argv[1] ?? process.argv[1] ?? "brain-mcp")],
+    args: [resolve(argv[1] ?? process.argv[1] ?? "brainhub-mcp")],
   };
   program
-    .name("brain-mcp")
+    .name("brainhub-mcp")
     .description("BrainHub local session MCP")
     .version("0.1.0")
     .option("--config <path>", "configuration file");
@@ -150,6 +180,248 @@ export async function runCli(
     }
     throw error;
   };
+  const runBackfill =
+    dependencies.runBackfill ??
+    (async (options: { yes: boolean; json: boolean }) => {
+      const loaded = await load();
+      const state = new SqliteStateStore(loaded.paths.stateFile, {
+        ...(loaded.paths.legacyStateFile
+          ? { legacyPath: loaded.paths.legacyStateFile }
+          : {}),
+      });
+      const service = new BackfillService({
+        state,
+        inspect: async () => {
+          const instance = await runtime();
+          try {
+            const discovery = await instance.discover({});
+            const bytes = discovery.sessions.reduce(
+              (total, session) =>
+                total +
+                session.turns.reduce(
+                  (turnTotal, turn) =>
+                    turnTotal +
+                    Buffer.byteLength(turn.text) +
+                    turn.images.reduce(
+                      (imageTotal, image) =>
+                        imageTotal +
+                        Buffer.byteLength(
+                          image.kind === "embedded" ? image.data : image.url,
+                        ),
+                      0,
+                    ),
+                  0,
+                ),
+              0,
+            );
+            return { sessions: discovery.sessions.length, bytes };
+          } finally {
+            instance.close();
+          }
+        },
+        confirm: async (summary) => {
+          if (options.yes) return true;
+          if (!process.stdin.isTTY) {
+            throw new Error(
+              "Backfill confirmation requires a terminal or --yes",
+            );
+          }
+          const prompt = createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          });
+          try {
+            const answer = await prompt.question(
+              `回填 ${summary.sessions} 个会话（${summary.bytes} bytes）？[Y/n] `,
+            );
+            return !["n", "no"].includes(answer.trim().toLowerCase());
+          } finally {
+            prompt.close();
+          }
+        },
+        upload: async () => {
+          const instance = await runtime();
+          try {
+            const result = await instance.uploadSessions({ backfill: true });
+            return { uploaded: result.uploaded, pending: result.pending };
+          } finally {
+            instance.close();
+          }
+        },
+        report: (summary) => {
+          if (!options.json) {
+            print(
+              `发现 ${summary.sessions} 个可回填会话，共 ${summary.bytes} bytes。`,
+            );
+          }
+        },
+      });
+      try {
+        return await service.run();
+      } finally {
+        state.close();
+      }
+    });
+
+  program
+    .command("setup")
+    .description("configure BrainHub MCP on macOS")
+    .option("--yes", "accept the default session backfill")
+    .option("--drive-root-id <id>", "choose an existing brain-hub folder")
+    .option(
+      "--obsidian-vault <path>",
+      "publish the daily portrait to this vault",
+    )
+    .option("--json", "machine-readable final output")
+    .action(
+      async (options: {
+        yes?: boolean;
+        driveRootId?: string;
+        obsidianVault?: string;
+        json?: boolean;
+      }) => {
+        let lastModelPercent = -1;
+        const service = new SetupService({
+          platform: process.platform,
+          ensureConfig: async () => {
+            const loaded = await load();
+            const nextConfig = options.obsidianVault
+              ? {
+                  ...loaded.config,
+                  publish: {
+                    fallbackPath: join(
+                      resolve(options.obsidianVault),
+                      "BrainHub",
+                    ),
+                  },
+                }
+              : loaded.config;
+            await persistConfig(loaded.configFile, nextConfig);
+          },
+          connectGoogle: async () => {
+            const loaded = await load();
+            const secrets = secretsFor(loaded);
+            const credential = await secrets.get();
+            const reusable = await resolveReusableGoogleAccount({
+              config: loaded.config,
+              credential,
+              loadAccount: async () => {
+                const authClient = await oauthFactory(
+                  loaded.config.drive.oauthClientFile,
+                  secrets,
+                ).getClient({ interactive: false });
+                return readGoogleDriveAccount(driveFactory(authClient));
+              },
+            });
+            if (reusable) return reusable;
+            if (!options.json) {
+              print(
+                "即将打开浏览器。请选择 BrainHub 要连接的 Google 账号并同意授权。",
+              );
+            }
+            const staged = await oauthFactory(
+              loaded.config.drive.oauthClientFile,
+              secrets,
+            ).beginInteractiveAuthorization();
+            try {
+              const connection = await connectGoogleAccount({
+                authClient: staged.client,
+                drive: driveFactory,
+                rootFolderName: loaded.config.drive.rootFolderName,
+                ...(options.driveRootId
+                  ? { rootFolderId: options.driveRootId }
+                  : {}),
+              });
+              const nextConfig = applyGoogleConnection(
+                loaded.config,
+                connection,
+              );
+              await staged.commit();
+              await persistConfig(loaded.configFile, nextConfig);
+              return { email: connection.account.email };
+            } catch (error) {
+              return rollbackAndRethrow(staged, error);
+            }
+          },
+          prepareModel: async (progress) => {
+            const loaded = await load();
+            const embedder = new E5Embedder({
+              model: loaded.config.search.model,
+              revision: loaded.config.search.modelRevision,
+              dimensions: loaded.config.search.dimensions,
+              cacheDir: loaded.paths.modelCache,
+            });
+            await embedder.prepare(progress);
+          },
+          runBackfill: () =>
+            runBackfill({
+              yes: options.yes ?? false,
+              json: options.json ?? false,
+            }),
+          inspectClients: async () => {
+            const loaded = await load();
+            const registry = new ClientRegistry(
+              launchWithConfig(launch, loaded.configFile),
+            );
+            return Object.fromEntries(
+              await Promise.all(
+                (["claude", "codex", "grok"] as const).map(async (client) => [
+                  client,
+                  await registry.status(client),
+                ]),
+              ),
+            ) as Record<
+              ClientName,
+              { available: boolean; registered: boolean }
+            >;
+          },
+          registerClient: async (client) => {
+            const loaded = await load();
+            await new ClientRegistry(
+              launchWithConfig(launch, loaded.configFile),
+            ).mutate(client, "install");
+          },
+          installScheduler: async ({ portrait }) => {
+            const loaded = await load();
+            await new SchedulerManager({
+              platform: process.platform,
+              homeDir: homedir(),
+              command: launch.command,
+              args: [...launch.args, "--config", loaded.configFile],
+            }).install(
+              loaded.config.scheduler.at,
+              loaded.config.scheduler.syncAt,
+              { portrait },
+            );
+          },
+          inspectObsidian: async () => {
+            const loaded = await load();
+            const path = await discoverPublishDirectory({
+              platform: process.platform,
+              homeDir: homedir(),
+              fallbackPath: loaded.config.publish.fallbackPath,
+            });
+            return path ? { configured: true, path } : { configured: false };
+          },
+          report: (progress) => {
+            if (options.json) return;
+            if (progress.type === "backfill-summary") {
+              print(
+                `发现 ${progress.sessions ?? 0} 个可回填会话，共 ${progress.bytes ?? 0} bytes。`,
+              );
+              return;
+            }
+            const percent = Math.floor(progress.percent ?? 0);
+            if (percent === lastModelPercent) return;
+            lastModelPercent = percent;
+            print(
+              `模型下载 ${percent}%${progress.file ? ` ${progress.file}` : ""}`,
+            );
+          },
+        });
+        print(await service.run(), options.json);
+      },
+    );
 
   program
     .command("serve")
@@ -219,46 +491,66 @@ export async function runCli(
   const auth = program.command("auth").description("manage Google OAuth");
   auth
     .command("login")
+    .alias("switch")
+    .option("--yes", "accept the default session backfill")
+    .option("--drive-root-id <id>", "choose an existing brain-hub folder")
     .option("--json")
-    .action(async (options: { json?: boolean }) => {
-      const loaded = await load();
-      if (!options.json) {
-        print(
-          "A browser will open. Choose the Google account BrainHub should use.",
-        );
-      }
-      const secrets = secretsFor(loaded);
-      const staged = await oauthFactory(
-        loaded.config.drive.oauthClientFile,
-        secrets,
-      ).beginInteractiveAuthorization();
-      try {
-        const connection = await connectGoogleAccount({
-          authClient: staged.client,
-          drive: driveFactory,
-          rootFolderName: loaded.config.drive.rootFolderName,
+    .action(
+      async (options: {
+        yes?: boolean;
+        driveRootId?: string;
+        json?: boolean;
+      }) => {
+        const loaded = await load();
+        if (!options.json) {
+          print(
+            "A browser will open. Choose the Google account BrainHub should use.",
+          );
+        }
+        const secrets = secretsFor(loaded);
+        const staged = await oauthFactory(
+          loaded.config.drive.oauthClientFile,
+          secrets,
+        ).beginInteractiveAuthorization();
+        const connection = await (async () => {
+          try {
+            const connected = await connectGoogleAccount({
+              authClient: staged.client,
+              drive: driveFactory,
+              rootFolderName: loaded.config.drive.rootFolderName,
+              ...(options.driveRootId
+                ? { rootFolderId: options.driveRootId }
+                : {}),
+            });
+            const nextConfig = applyGoogleConnection(loaded.config, connected);
+            await staged.commit();
+            await persistConfig(loaded.configFile, nextConfig);
+            return { connected, nextConfig };
+          } catch (error) {
+            return rollbackAndRethrow(staged, error);
+          }
+        })();
+        const backfill = await runBackfill({
+          yes: options.yes ?? false,
+          json: options.json ?? false,
         });
-        const nextConfig = applyGoogleConnection(loaded.config, connection);
-        await staged.commit();
-        await persistConfig(loaded.configFile, nextConfig);
         print(
           {
             authenticated: true,
             account: {
-              email: connection.account.email,
-              displayName: connection.account.displayName,
+              email: connection.connected.account.email,
+              displayName: connection.connected.account.displayName,
             },
             drive: {
-              rootFolderId: connection.rootFolderId,
-              rootFolderName: nextConfig.drive.rootFolderName,
+              rootFolderId: connection.connected.rootFolderId,
+              rootFolderName: connection.nextConfig.drive.rootFolderName,
             },
+            backfill,
           },
           options.json,
         );
-      } catch (error) {
-        await rollbackAndRethrow(staged, error);
-      }
-    });
+      },
+    );
   auth
     .command("status")
     .option("--json")
@@ -304,7 +596,25 @@ export async function runCli(
         }
         throw error;
       }
-      print({ authenticated: false }, options.json);
+      const warnings: Array<{ code: string; message: string }> = [];
+      if (previousCredential) {
+        try {
+          await revokeGoogleCredential(previousCredential);
+        } catch (error) {
+          warnings.push({
+            code: "OAUTH_REVOCATION_FAILED",
+            message:
+              error instanceof Error ? error.message : "OAuth revoke failed",
+          });
+        }
+      }
+      print(
+        {
+          authenticated: false,
+          ...(warnings.length > 0 ? { warnings } : {}),
+        },
+        options.json,
+      );
     });
 
   const drive = program
@@ -312,8 +622,9 @@ export async function runCli(
     .description("manage the BrainHub Drive root");
   drive
     .command("init")
+    .option("--drive-root-id <id>", "choose an existing brain-hub folder")
     .option("--json")
-    .action(async (options: { json?: boolean }) => {
+    .action(async (options: { driveRootId?: string; json?: boolean }) => {
       const loaded = await load();
       const secrets = secretsFor(loaded);
       const oauth = await oauthFactory(
@@ -324,6 +635,7 @@ export async function runCli(
         authClient: oauth,
         drive: driveFactory,
         rootFolderName: loaded.config.drive.rootFolderName,
+        ...(options.driveRootId ? { rootFolderId: options.driveRootId } : {}),
       });
       await persistConfig(
         loaded.configFile,
@@ -386,13 +698,10 @@ export async function runCli(
     .action(async (options: { json?: boolean }) => {
       const instance = await runtime();
       try {
-        const manifest = await instance
+        const result = await instance
           .searchService(await instance.drive(false))
           .sync();
-        print(
-          { synced: true, references: manifest.references.length },
-          options.json,
-        );
+        print({ synced: true, ...result }, options.json);
       } finally {
         instance.close();
       }
@@ -404,13 +713,9 @@ export async function runCli(
       const instance = await runtime();
       try {
         const drivePort = await instance.drive(false);
-        const old = await drivePort.list({ prefix: "_meta/search/v1/" });
-        for (const entry of old) await drivePort.trash(entry.id);
-        const manifest = await instance.searchService(drivePort).sync();
-        print(
-          { reindexed: true, references: manifest.references.length },
-          options.json,
-        );
+        await rm(instance.paths.searchIndexFile, { force: true });
+        const result = await instance.searchService(drivePort).sync();
+        print({ reindexed: true, ...result }, options.json);
       } finally {
         instance.close();
       }
@@ -454,12 +759,12 @@ export async function runCli(
       }
     });
   portrait
-    .command("pull")
+    .command("sync")
     .option("--json")
     .action(async (options: { json?: boolean }) => {
       const instance = await runtime();
       try {
-        print(await instance.pullPortrait(), options.json);
+        print(await instance.syncPortrait(), options.json);
       } finally {
         instance.close();
       }
@@ -617,6 +922,78 @@ export async function runCli(
         args: launch.args,
       });
       print(await manager.status(), options.json);
+    });
+
+  program
+    .command("uninstall")
+    .description("remove BrainHub MCP integrations and local state")
+    .option("--yes", "confirm removal without an interactive prompt")
+    .option("--json")
+    .action(async (options: { yes?: boolean; json?: boolean }) => {
+      if (!options.yes) {
+        if (!process.stdin.isTTY) {
+          throw new BrainHubError(
+            "CONFIRMATION_REQUIRED",
+            "Run `brainhub-mcp uninstall --yes` to confirm local data removal",
+          );
+        }
+        const prompt = createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+        try {
+          const answer = await prompt.question(
+            "移除客户端注册、授权、Keychain、配置、索引和模型缓存？Drive 与 Obsidian 内容会保留。[y/N] ",
+          );
+          if (!isAffirmativeConfirmation(answer)) {
+            print({ uninstalled: false, cancelled: true }, options.json);
+            return;
+          }
+        } finally {
+          prompt.close();
+        }
+      }
+      const loaded = await load();
+      const secrets = secretsFor(loaded);
+      const credential = await secrets.get();
+      const registry = new ClientRegistry(launch);
+      const scheduler = new SchedulerManager({
+        platform: process.platform,
+        homeDir: homedir(),
+        command: launch.command,
+        args: [...launch.args, "--config", loaded.configFile],
+      });
+      const result = await new UninstallService({
+        platform: process.platform,
+        inspectClients: async () =>
+          Object.fromEntries(
+            await Promise.all(
+              (["claude", "codex", "grok"] as const).map(async (client) => [
+                client,
+                await registry.status(client),
+              ]),
+            ),
+          ) as Record<ClientName, { available: boolean; registered: boolean }>,
+        unregisterClient: (client) => registry.mutate(client, "uninstall"),
+        uninstallScheduler: () => scheduler.uninstall(),
+        revokeGoogle: () =>
+          credential
+            ? revokeGoogleCredential(credential)
+            : Promise.resolve(false),
+        clearKeychain: () => secrets.delete(),
+        removeLocalState: async () => {
+          const targets = localCleanupTargets(
+            loaded.paths.stateFile,
+            loaded.paths.modelCache,
+          );
+          await Promise.all([
+            rm(loaded.configFile, { force: true }),
+            rm(targets.dataDirectory, { recursive: true, force: true }),
+            rm(targets.modelCache, { recursive: true, force: true }),
+          ]);
+        },
+      }).run();
+      print(result, options.json);
     });
 
   await program.parseAsync(argv);

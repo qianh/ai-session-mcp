@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SecretStore } from "../../src/auth/secret-store.js";
 import type { ConfigSecretStoreOptions } from "../../src/auth/secret-store-factory.js";
 import { createDefaultConfig, platformPaths } from "../../src/domain/config.js";
+import { conversationKey } from "../../src/domain/session.js";
 import { MemoryDrive } from "../../src/drive/memory-drive.js";
 import { BrainHubRuntime } from "../../src/runtime/container.js";
 import { SqliteStateStore } from "../../src/state/sqlite-store.js";
@@ -100,6 +101,56 @@ async function writeSourceFixtures(
 }
 
 describe("BrainHub runtime", () => {
+  it("reads a complete session only from inbox by stable session reference", async () => {
+    const { runtime } = await runtimeFixture();
+    const drive = new MemoryDrive();
+    const properties = {
+      brainhubKey: conversationKey("codex", "session-1"),
+      source: "codex",
+      conversationId: "session-1",
+      updatedAt: "2026-07-26T00:00:00.000Z",
+    };
+    await drive.put({
+      path: "sessions/2026-07/session.md",
+      bytes: Buffer.from("outside inbox"),
+      mimeType: "text/markdown",
+      appProperties: properties,
+    });
+    await drive.put({
+      path: "inbox/macbook/codex-session.md",
+      bytes: Buffer.from("# Complete session\n"),
+      mimeType: "text/markdown",
+      appProperties: properties,
+    });
+    vi.spyOn(runtime, "drive").mockResolvedValue(drive);
+
+    const result = await runtime.getSession({
+      source: "codex",
+      conversationId: "session-1",
+    });
+
+    expect(result).toEqual({
+      source: "codex",
+      conversationId: "session-1",
+      content: "# Complete session\n",
+      updatedAt: "2026-07-26T00:00:00.000Z",
+    });
+    runtime.close();
+  });
+
+  it("returns a stable error when an inbox session does not exist", async () => {
+    const { runtime } = await runtimeFixture();
+    vi.spyOn(runtime, "drive").mockResolvedValue(new MemoryDrive());
+
+    await expect(
+      runtime.getSession({ source: "claude-code", conversationId: "missing" }),
+    ).rejects.toMatchObject({
+      code: "SESSION_NOT_FOUND",
+      retryable: false,
+    });
+    runtime.close();
+  });
+
   it("reads the portrait from the Digital Twin file in My Drive", async () => {
     const profile = {
       id: "profile-1",
@@ -210,19 +261,39 @@ describe("BrainHub runtime", () => {
 
     const result = await runtime.hubStatus();
 
-    expect(result.drive).toEqual({ reachable: false });
-    expect(result.adapters).toMatchObject({
-      claude: { discovered: 0 },
-      codex: { discovered: 0 },
-      grok: { discovered: 0 },
+    expect(result.account).toEqual({ connected: false });
+    expect(result.root).toEqual({ configured: false, name: "brain-hub" });
+    expect(result.upload).toMatchObject({
+      driveReachable: false,
+      inbox: {},
+      adapters: {
+        claude: { discovered: 0 },
+        codex: { discovered: 0 },
+        grok: { discovered: 0 },
+      },
     });
-    expect(result.scheduler).toMatchObject({
+    expect(result.model).toMatchObject({ ready: false, bytes: 0 });
+    expect(result.index).toEqual({});
+    expect(result.launchd).toMatchObject({
       installed: false,
       platform: "linux",
     });
+    expect(result.obsidian).toEqual({ configured: false });
     expect(result.warnings).toContainEqual(
       expect.objectContaining({ code: "DRIVE_UNAVAILABLE" }),
     );
+    runtime.close();
+  });
+
+  it("does not report a partial model cache as ready", async () => {
+    const { runtime, paths } = await runtimeFixture();
+    await mkdir(paths.modelCache, { recursive: true });
+    await writeFile(join(paths.modelCache, "partial-download.bin"), "partial");
+
+    const result = await runtime.hubStatus();
+
+    expect(result.model).toMatchObject({ ready: false });
+    expect((result.model as { bytes: number }).bytes).toBeGreaterThan(0);
     runtime.close();
   });
 
@@ -413,6 +484,7 @@ describe("BrainHub runtime", () => {
     );
 
     const failed = await runtime.uploadSessions({ sources: ["claude-code"] });
+    expect(failed.pending).toBe(1);
     expect(failed.warnings).toContainEqual(
       expect.objectContaining({ code: "SESSION_PROCESSING_FAILED" }),
     );
@@ -431,7 +503,7 @@ describe("BrainHub runtime", () => {
 
     const retried = await runtime.uploadSessions({ sources: ["claude-code"] });
 
-    expect(retried).toMatchObject({ scanned: 1, uploaded: 1 });
+    expect(retried).toMatchObject({ scanned: 1, uploaded: 1, pending: 0 });
     runtime.close();
   });
 });

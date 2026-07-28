@@ -46,7 +46,7 @@ describe("scheduler manager", () => {
       "<string>upload</string>\n    <string>--sources</string>\n    <string>claude-code,codex,grok-build</string>",
     );
     await expect(readFile(syncPath, "utf8")).resolves.toContain(
-      "<string>pull</string>",
+      "<string>sync</string>",
     );
     await expect(manager.status()).resolves.toEqual({
       installed: true,
@@ -71,7 +71,7 @@ describe("scheduler manager", () => {
     });
   });
 
-  it("repairs an existing Linux timer with the explicit three-source command", async () => {
+  it("rejects scheduler installation outside macOS", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "brainhub-systemd-"));
     const directory = join(homeDir, ".config", "systemd", "user");
     await mkdir(directory, { recursive: true });
@@ -87,28 +87,29 @@ describe("scheduler manager", () => {
       },
     });
 
-    await manager.install("03:17", "06:23");
-    await manager.install("03:17", "06:23");
-
-    await expect(
-      readFile(join(directory, "brainhub-upload.service"), "utf8"),
-    ).resolves.toContain(
-      "upload --sources claude-code,codex,grok-build --json",
+    await expect(manager.install("03:17", "06:23")).rejects.toThrow(
+      "BrainHub MCP v1 supports macOS only",
     );
-    await expect(
-      readFile(join(directory, "brainhub-upload.timer"), "utf8"),
-    ).resolves.toContain("OnCalendar=*-*-* 03:17:00");
-    await expect(
-      readFile(join(directory, "brainhub-sync.service"), "utf8"),
-    ).resolves.toContain("portrait pull --json");
-    await expect(
-      readFile(join(directory, "brainhub-sync.timer"), "utf8"),
-    ).resolves.toContain("OnCalendar=*-*-* 06:23:00");
-    expect(
-      calls.filter(
-        ({ command, args }) =>
-          command === "systemctl" && args.includes("brainhub-upload.timer"),
-      ),
-    ).toHaveLength(2);
+    expect(calls).toEqual([]);
+  });
+
+  it("can install the upload job without an Obsidian portrait job", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "brainhub-scheduler-"));
+    const manager = new SchedulerManager({
+      platform: "darwin",
+      homeDir,
+      command: "/usr/local/bin/node",
+      args: ["/opt/brainhub-mcp/dist/cli/index.js"],
+      runner: async () => undefined,
+    });
+
+    await manager.install("02:00", "06:00", { portrait: false });
+
+    await expect(manager.status()).resolves.toEqual({
+      installed: true,
+      upload: { installed: true },
+      sync: { installed: false },
+      platform: "darwin",
+    });
   });
 });

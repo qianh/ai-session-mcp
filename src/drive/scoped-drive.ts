@@ -3,6 +3,7 @@ import { posix } from "node:path";
 import { BrainHubError } from "../domain/errors.js";
 import type {
   DriveEntry,
+  DriveChanges,
   DriveListQuery,
   DriveObject,
   DrivePort,
@@ -61,6 +62,23 @@ export class InboxScopedDrive implements DrivePort {
       const registered = this.#register(entry);
       return registered ? [registered] : [];
     });
+  }
+
+  async changes(query: {
+    prefix: string;
+    cursor?: string;
+  }): Promise<DriveChanges> {
+    const prefix = query.prefix ? inboxPath(query.prefix) : inboxPrefix;
+    const changes = await this.#drive.changes({
+      prefix,
+      ...(query.cursor ? { cursor: query.cursor } : {}),
+    });
+    const entries = changes.entries.flatMap((entry) => {
+      const registered = this.#register(entry);
+      return registered ? [registered] : [];
+    });
+    for (const id of changes.removedIds) this.#knownIds.delete(id);
+    return { ...changes, entries };
   }
 
   async put(input: DrivePutInput): Promise<DriveEntry> {

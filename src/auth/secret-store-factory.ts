@@ -30,13 +30,29 @@ export function createConfigSecretStore(
     platform: options.platform,
     ...(options.runner ? { runner: options.runner } : {}),
   };
+  const account = credentialStoreAccount(options.configFile);
   const primary = new PlatformSecretStore({
     ...common,
-    account: credentialStoreAccount(options.configFile),
+    account,
   });
-  const legacy = new PlatformSecretStore({
+  const legacyAccount = new PlatformSecretStore({
     ...common,
     account: options.legacyAccount,
   });
-  return new MigratingSecretStore(primary, legacy);
+  const renamedService = new MigratingSecretStore(
+    new PlatformSecretStore({
+      ...common,
+      service: "brain-mcp-google-oauth",
+      account,
+    }),
+    new PlatformSecretStore({
+      ...common,
+      service: "brain-mcp-google-oauth",
+      account: options.legacyAccount,
+    }),
+  );
+  return new MigratingSecretStore(
+    primary,
+    new MigratingSecretStore(legacyAccount, renamedService),
+  );
 }

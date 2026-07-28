@@ -1,265 +1,37 @@
-import {
-  mkdtemp,
-  mkdir,
-  readFile,
-  stat,
-  utimes,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { MemoryDrive } from "../../src/drive/memory-drive.js";
-import { discoverPublishDirectory } from "../../src/portrait/obsidian.js";
 import { PortraitService } from "../../src/portrait/portrait-service.js";
 
-describe("portrait publishing", () => {
-  it("uses the My Drive digital twin file as the portrait source", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const fallback = join(home, "publish");
-    const brainHubDrive = new MemoryDrive();
-    const myDrive = new MemoryDrive();
-    await Promise.all([
-      brainHubDrive.put({
-        path: "publish/portrait.md",
-        bytes: Buffer.from("# Stale BrainHub portrait\n"),
-        mimeType: "text/markdown",
-      }),
-      myDrive.put({
-        path: "Digital_Twin_Profile.md",
-        bytes: Buffer.from("# Authoritative Digital Twin\n"),
-        mimeType: "text/markdown",
-      }),
-    ]);
-    const service = new PortraitService({
-      drive: brainHubDrive,
-      portraitSource: {
-        drive: myDrive,
-        path: "Digital_Twin_Profile.md",
-      },
-      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
+describe("portrait reading", () => {
+  it("reads the full Digital Twin file without local side effects", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "brainhub-home-"));
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "Digital_Twin_Profile.md",
+      bytes: Buffer.from("# Authoritative Digital Twin\n"),
+      mimeType: "text/markdown",
     });
+    const service = new PortraitService({ drive });
 
-    const result = await service.getPortrait();
-
-    expect(result.portrait).toBe("# Authoritative Digital Twin\n");
-    await expect(readFile(join(fallback, "portrait.md"), "utf8")).resolves.toBe(
-      "# Authoritative Digital Twin\n",
-    );
-  });
-
-  it("prefers the active Obsidian vault over the configured fallback", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const vault = join(home, "Notes");
-    const fallback = join(home, "fallback");
-    await Promise.all([mkdir(vault), mkdir(fallback)]);
-    const configDirectory = join(
-      home,
-      "Library",
-      "Application Support",
-      "obsidian",
-    );
-    await mkdir(configDirectory, { recursive: true });
-    await writeFile(
-      join(configDirectory, "obsidian.json"),
-      JSON.stringify({ vaults: { abc: { path: vault, ts: 20, open: true } } }),
-    );
-
+    await expect(service.getPortrait()).resolves.toEqual({
+      portrait: "# Authoritative Digital Twin\n",
+    });
     await expect(
-      discoverPublishDirectory({
-        platform: "darwin",
-        homeDir: home,
-        fallbackPath: fallback,
-      }),
-    ).resolves.toBe(join(vault, "BrainHub"));
+      readFile(join(homeDir, "BrainHub", "portrait.md"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("falls back to an explicit writable directory and writes both documents", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const fallback = join(home, "publish");
-    const drive = new MemoryDrive();
-    await drive.put({
-      path: "publish/portrait.md",
-      bytes: Buffer.from("# Portrait\n\n## 变更 Diff\n- Changed focus\n"),
-      mimeType: "text/markdown",
-    });
-    await drive.put({
-      path: "publish/weekly-latest.md",
-      bytes: Buffer.from("# Weekly\n"),
-      mimeType: "text/markdown",
-    });
-    const service = new PortraitService({
-      drive,
-      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
-    });
+  it("reports a missing Digital Twin file explicitly", async () => {
+    const service = new PortraitService({ drive: new MemoryDrive() });
 
-    const result = await service.pullPortrait();
-
-    expect(result).toMatchObject({
-      localRefreshed: true,
-      weeklyRefreshed: true,
-    });
-    expect(result.diff).toContain("Changed focus");
-    expect(await readFile(join(fallback, "portrait.md"), "utf8")).toContain(
-      "# Portrait",
-    );
-    expect(
-      await readFile(join(fallback, "weekly-latest.md"), "utf8"),
-    ).toContain("# Weekly");
-  });
-
-  it("returns Drive portrait with a warning when no writable destination exists", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const drive = new MemoryDrive();
-    await drive.put({
-      path: "publish/portrait.md",
-      bytes: Buffer.from("portrait"),
-      mimeType: "text/markdown",
-    });
-    const service = new PortraitService({
-      drive,
-      publish: { platform: "linux", homeDir: home, fallbackPath: "" },
-    });
-    const result = await service.getPortrait();
-    expect(result).toMatchObject({
-      portrait: "portrait",
-      localRefreshed: false,
-    });
-    expect(result.warnings[0]?.code).toBe("PUBLISH_PATH_REQUIRED");
-  });
-
-  it("extracts every line in the Diff section", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const fallback = join(home, "publish");
-    const drive = new MemoryDrive();
-    await drive.put({
-      path: "publish/portrait.md",
-      bytes: Buffer.from(
-        "# Portrait\n\n## Diff\n- First change\n- Second change\n\n## Details\nUnrelated\n",
-      ),
-      mimeType: "text/markdown",
-    });
-    const service = new PortraitService({
-      drive,
-      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
-    });
-
-    const result = await service.getPortrait();
-
-    expect(result.diff).toBe("- First change\n- Second change");
-  });
-
-  it("preserves the previous portrait when the document pair cannot commit", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const fallback = join(home, "publish");
-    await mkdir(fallback, { recursive: true });
-    await writeFile(join(fallback, "portrait.md"), "# Previous portrait\n");
-    await mkdir(join(fallback, "weekly-latest.md"));
-    const drive = new MemoryDrive();
-    await drive.put({
-      path: "publish/portrait.md",
-      bytes: Buffer.from("# New portrait\n"),
-      mimeType: "text/markdown",
-    });
-    await drive.put({
-      path: "publish/weekly-latest.md",
-      bytes: Buffer.from("# New weekly\n"),
-      mimeType: "text/markdown",
-    });
-    const service = new PortraitService({
-      drive,
-      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
-    });
-
-    const result = await service.pullPortrait();
-
-    expect(result).toMatchObject({
-      localRefreshed: false,
-      weeklyRefreshed: false,
-    });
-    expect(await readFile(join(fallback, "portrait.md"), "utf8")).toBe(
-      "# Previous portrait\n",
-    );
-    expect(result.warnings).toContainEqual(
-      expect.objectContaining({ code: "PUBLISH_WRITE_FAILED" }),
-    );
-  });
-
-  it("refreshes the portrait when Drive has no weekly report", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const fallback = join(home, "publish");
-    await mkdir(fallback, { recursive: true });
-    await writeFile(join(fallback, "portrait.md"), "# Previous portrait\n");
-    const drive = new MemoryDrive();
-    await drive.put({
-      path: "publish/portrait.md",
-      bytes: Buffer.from("# New portrait\n"),
-      mimeType: "text/markdown",
-    });
-    const service = new PortraitService({
-      drive,
-      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
-    });
-
-    const result = await service.pullPortrait();
-
-    expect(result).toMatchObject({
-      localRefreshed: true,
-      weeklyRefreshed: false,
-    });
-    expect(await readFile(join(fallback, "portrait.md"), "utf8")).toBe(
-      "# New portrait\n",
-    );
-    expect(result.warnings).toContainEqual(
-      expect.objectContaining({ code: "SOURCE_UNAVAILABLE" }),
-    );
-  });
-
-  it("does not rewrite local documents that already match Drive", async () => {
-    const home = await mkdtemp(join(tmpdir(), "brainhub-home-"));
-    const fallback = join(home, "publish");
-    const portraitPath = join(fallback, "portrait.md");
-    const weeklyPath = join(fallback, "weekly-latest.md");
-    await mkdir(fallback, { recursive: true });
-    await Promise.all([
-      writeFile(portraitPath, "# Current portrait\n"),
-      writeFile(weeklyPath, "# Current weekly\n"),
-    ]);
-    const oldTimestamp = new Date("2026-01-01T00:00:00.000Z");
-    await Promise.all([
-      utimes(portraitPath, oldTimestamp, oldTimestamp),
-      utimes(weeklyPath, oldTimestamp, oldTimestamp),
-    ]);
-    const drive = new MemoryDrive();
-    await drive.put({
-      path: "publish/portrait.md",
-      bytes: Buffer.from("# Current portrait\n"),
-      mimeType: "text/markdown",
-    });
-    await drive.put({
-      path: "publish/weekly-latest.md",
-      bytes: Buffer.from("# Current weekly\n"),
-      mimeType: "text/markdown",
-    });
-    const service = new PortraitService({
-      drive,
-      publish: { platform: "linux", homeDir: home, fallbackPath: fallback },
-    });
-
-    const result = await service.pullPortrait();
-
-    expect(result).toMatchObject({
-      unchanged: true,
-      localRefreshed: false,
-      weeklyRefreshed: false,
-    });
-    await expect(stat(portraitPath)).resolves.toMatchObject({
-      mtime: oldTimestamp,
-    });
-    await expect(stat(weeklyPath)).resolves.toMatchObject({
-      mtime: oldTimestamp,
+    await expect(service.getPortrait()).rejects.toMatchObject({
+      code: "SOURCE_UNAVAILABLE",
+      retryable: false,
     });
   });
 });

@@ -70,6 +70,8 @@ export interface PlatformPathOptions {
 export interface PlatformPaths {
   configFile: string;
   stateFile: string;
+  legacyStateFile?: string;
+  searchIndexFile: string;
   modelCache: string;
 }
 
@@ -84,6 +86,7 @@ export function platformPaths(options: PlatformPathOptions): PlatformPaths {
     return {
       configFile: join(applicationSupport, "config.toml"),
       stateFile: join(applicationSupport, "state.sqlite"),
+      searchIndexFile: join(applicationSupport, "search-index.sqlite"),
       modelCache: join(
         options.homeDir,
         "Library",
@@ -97,17 +100,22 @@ export function platformPaths(options: PlatformPathOptions): PlatformPaths {
   return {
     configFile: join(
       options.xdgConfigHome ?? join(options.homeDir, ".config"),
-      "brain-mcp",
+      "brainhub-mcp",
       "config.toml",
     ),
     stateFile: join(
       options.xdgStateHome ?? join(options.homeDir, ".local", "state"),
-      "brain-mcp",
+      "brainhub-mcp",
       "state.sqlite",
+    ),
+    searchIndexFile: join(
+      options.xdgStateHome ?? join(options.homeDir, ".local", "state"),
+      "brainhub-mcp",
+      "search-index.sqlite",
     ),
     modelCache: join(
       options.xdgCacheHome ?? join(options.homeDir, ".cache"),
-      "brain-mcp",
+      "brainhub-mcp",
       "models",
     ),
   };

@@ -1,0 +1,3 @@
+# Keep the search index local to each device
+
+Each BrainHub MCP installation independently stores its vectors, search manifest, and Google Drive change cursor in rebuildable local state. The cursor is reused only when model, revision, dimensions, chunk size, and chunk overlap remain compatible and no stored chunk is missing a vector; otherwise the local index is rebuilt so model recovery and configuration changes self-heal. BrainHub MCP removes the Drive `_meta/search/` tree and never writes derived search artifacts beside user content. Devices share canonical inbox sessions through Drive but do not share search indexes; upgrades may rebuild local indexes without migrating or modifying any Drive content.

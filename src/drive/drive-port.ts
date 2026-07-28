@@ -31,8 +31,16 @@ export interface DriveQuota {
   totalBytes: number;
 }
 
+export interface DriveChanges {
+  entries: DriveEntry[];
+  removedIds: string[];
+  cursor: string;
+  reset: boolean;
+}
+
 export interface DrivePort {
   list(query: DriveListQuery): Promise<DriveEntry[]>;
+  changes(query: { prefix: string; cursor?: string }): Promise<DriveChanges>;
   put(input: DrivePutInput): Promise<DriveEntry>;
   upsert(input: DrivePutInput): Promise<DriveEntry>;
   read(id: string): Promise<DriveObject>;

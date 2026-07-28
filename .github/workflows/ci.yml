@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify
+      - run: npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+      - run: npm install --prefix "$RUNNER_TEMP/brainhub-smoke" "$RUNNER_TEMP"/brainhub-mcp-*.tgz
+      - run: '"$RUNNER_TEMP/brainhub-smoke/node_modules/.bin/brainhub-mcp" --help'

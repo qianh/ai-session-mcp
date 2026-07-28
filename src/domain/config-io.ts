@@ -7,7 +7,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { delimiter, dirname, join, resolve } from "node:path";
 
 import TOML from "@iarna/toml";
@@ -180,11 +180,27 @@ export async function loadConfig(options: {
     config.publish.fallbackPath,
     options.homeDir,
   );
+  const accountIdentity = JSON.stringify([
+    config.drive.accountPermissionId || "unbound-account",
+    config.drive.rootFolderId || "unbound-root",
+  ]);
+  const accountKey = createHash("sha256")
+    .update(accountIdentity)
+    .digest("hex")
+    .slice(0, 24);
+  const accountStateDirectory = join(
+    dirname(basePaths.stateFile),
+    "accounts",
+    accountKey,
+  );
   return {
     config,
     configFile,
     paths: {
       ...basePaths,
+      legacyStateFile: basePaths.stateFile,
+      stateFile: join(accountStateDirectory, "state.sqlite"),
+      searchIndexFile: join(accountStateDirectory, "search-index.sqlite"),
       ...(env.BRAINHUB_MODEL_CACHE
         ? { modelCache: expandHome(env.BRAINHUB_MODEL_CACHE, options.homeDir) }
         : {}),

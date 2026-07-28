@@ -18,8 +18,11 @@ interface RuntimeServices {
     sources?: string[];
     limit?: number;
   }): Promise<object>;
+  getSession(input: {
+    source: SessionSource;
+    conversationId: string;
+  }): Promise<object>;
   getPortrait(): Promise<object>;
-  pullPortrait(): Promise<object>;
   hubStatus(): Promise<object>;
 }
 
@@ -31,7 +34,7 @@ type ToolResult = {
 
 function success(output: object, text: string): ToolResult {
   return {
-    content: [{ type: "text", text: text.slice(0, 65_000) }],
+    content: [{ type: "text", text }],
     structuredContent: output as Record<string, unknown>,
   };
 }
@@ -84,7 +87,6 @@ export function createToolHandlers(services: RuntimeServices) {
       to?: string | undefined;
       sources?: string[] | undefined;
       limit?: number | undefined;
-      include_original?: boolean | undefined;
     }): Promise<ToolResult> => {
       try {
         const output = await services.searchSessions({
@@ -110,13 +112,18 @@ export function createToolHandlers(services: RuntimeServices) {
         return failure(error);
       }
     },
-    pull_portrait: async (): Promise<ToolResult> => {
+    get_session: async (input: {
+      source: SessionSource;
+      conversation_id: string;
+    }): Promise<ToolResult> => {
       try {
-        const output = await services.pullPortrait();
+        const output = await services.getSession({
+          source: input.source,
+          conversationId: input.conversation_id,
+        });
         return success(
           output,
-          (output as { diff?: string }).diff ??
-            "画像已更新，本期没有 Diff 段落。",
+          (output as { content?: string }).content ?? "会话不可用",
         );
       } catch (error) {
         return failure(error);
@@ -134,7 +141,7 @@ export function createToolHandlers(services: RuntimeServices) {
 }
 
 export function createMcpServer(services: RuntimeServices): McpServer {
-  const server = new McpServer({ name: "brain-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "brainhub-mcp", version: "0.1.0" });
   const handlers = createToolHandlers(services);
   const source = z.enum(["claude-code", "codex", "grok-build"]);
 
@@ -154,14 +161,13 @@ export function createMcpServer(services: RuntimeServices): McpServer {
   server.registerTool(
     "search_sessions",
     {
-      description: "对 BrainHub cards、sessions 和 inbox 执行混合语义搜索",
+      description: "搜索 BrainHub inbox 中的 AI CLI 会话",
       inputSchema: {
         query: z.string().min(1),
         from: z.string().optional(),
         to: z.string().optional(),
         sources: z.array(z.string()).optional(),
         limit: z.number().int().min(1).max(50).optional(),
-        include_original: z.boolean().optional(),
       },
     },
     handlers.search_sessions,
@@ -169,24 +175,27 @@ export function createMcpServer(services: RuntimeServices): McpServer {
   server.registerTool(
     "get_portrait",
     {
-      description: "读取 Drive 最新画像并尝试刷新本地 Obsidian 副本",
+      description: "读取 My Drive 根目录下完整的 Digital_Twin_Profile.md",
       inputSchema: {},
     },
     handlers.get_portrait,
   );
   server.registerTool(
-    "pull_portrait",
+    "get_session",
     {
-      description: "将画像和最新周报原子写入 Obsidian，并返回 Diff",
-      inputSchema: {},
+      description: "根据搜索返回的来源和会话标识读取 inbox 中的完整会话",
+      inputSchema: {
+        source,
+        conversation_id: z.string().min(1),
+      },
     },
-    handlers.pull_portrait,
+    handlers.get_session,
   );
   server.registerTool(
     "hub_status",
     {
-      description: "读取 BrainHub 配额、积压、蒸馏和本地适配器状态",
-      inputSchema: { include_local: z.boolean().optional().default(true) },
+      description: "读取 BrainHub 账号、上传、搜索索引和定时任务状态",
+      inputSchema: {},
     },
     handlers.hub_status,
   );

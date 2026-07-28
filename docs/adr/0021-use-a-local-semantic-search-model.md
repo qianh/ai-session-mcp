@@ -1,0 +1,3 @@
+# Use a local semantic search model
+
+BrainHub MCP retains semantic session search using a pinned, quantized `Xenova/multilingual-e5-small` model executed locally through Transformers.js. Session text and queries are never sent to a remote embedding API. Each device stores model weights and its rebuildable search index locally; no vector artifacts or search manifests are written to Drive. If the model is unavailable, `search_sessions` returns keyword results with an explicit `search_mode: "keyword"` value and degradation warning; it automatically returns to semantic mode after recovery. Keyword retrieval is a fallback, not the primary search capability.

@@ -1,23 +1,51 @@
 {
-  "name": "brain-mcp",
+  "name": "brainhub-mcp",
   "version": "0.1.0",
-  "private": true,
+  "license": "Apache-2.0",
+  "description": "Local-first BrainHub MCP server for personal Google Drive sessions",
+  "keywords": [
+    "brainhub",
+    "mcp",
+    "google-drive",
+    "ai-sessions"
+  ],
+  "homepage": "https://github.com/qianh/ai-session-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/qianh/ai-session-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qianh/ai-session-mcp.git"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "type": "module",
   "bin": {
-    "brain-mcp": "dist/cli/index.js"
+    "brainhub-mcp": "dist/cli/index.js"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.json",
+    "build:release": "pnpm build && node scripts/inject-official-oauth.mjs",
     "dev": "tsx src/cli/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.test.json",
     "lint": "eslint .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "pack:check": "npm pack --dry-run --ignore-scripts",
+    "verify": "pnpm test && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm pack:check",
+    "prepublishOnly": "pnpm verify && pnpm build:release"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

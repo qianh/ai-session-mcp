@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { google } from "googleapis";
 
 import { BrainHubError } from "../domain/errors.js";
+import { BUNDLED_GOOGLE_OAUTH_CLIENT } from "./official-oauth-client.js";
 import {
   startOAuthLoopback,
   type OAuthLoopbackSession,
@@ -78,12 +79,23 @@ export function googleAuthorizationOptions(
 
 export async function readOAuthClientConfig(
   path: string,
+  bundled: OAuthClientConfig = BUNDLED_GOOGLE_OAUTH_CLIENT,
 ): Promise<OAuthClientConfig> {
-  if (!path)
+  if (!path) {
+    if (
+      bundled.clientId.endsWith(".apps.googleusercontent.com") &&
+      !bundled.clientId.startsWith("__") &&
+      bundled.clientSecret.length > 0 &&
+      !bundled.clientSecret.startsWith("__") &&
+      bundled.redirectUris.length > 0
+    ) {
+      return bundled;
+    }
     throw new BrainHubError(
       "AUTH_REQUIRED",
-      "Google OAuth client file is not configured",
+      "Official Google OAuth client is missing from this build; source builds must configure BRAINHUB_GOOGLE_OAUTH_CLIENT_FILE",
     );
+  }
   try {
     return parseOAuthClientConfig(
       JSON.parse(await readFile(path, "utf8")) as unknown,
@@ -95,6 +107,34 @@ export async function readOAuthClientConfig(
       "Unable to read a valid Google OAuth client file",
     );
   }
+}
+
+export async function revokeGoogleCredential(
+  serialized: string,
+  fetcher: typeof fetch = fetch,
+): Promise<boolean> {
+  let credentials: { refresh_token?: unknown; access_token?: unknown };
+  try {
+    credentials = JSON.parse(serialized) as typeof credentials;
+  } catch {
+    return false;
+  }
+  const token =
+    typeof credentials.refresh_token === "string"
+      ? credentials.refresh_token
+      : typeof credentials.access_token === "string"
+        ? credentials.access_token
+        : null;
+  if (!token) return false;
+  const response = await fetcher("https://oauth2.googleapis.com/revoke", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token }),
+  });
+  if (!response.ok) {
+    throw new Error(`Google OAuth revocation failed with ${response.status}`);
+  }
+  return true;
 }
 
 export class GoogleOAuth {

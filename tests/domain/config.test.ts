@@ -84,6 +84,40 @@ describe("configuration", () => {
     });
   });
 
+  it("scopes upload and search state to the active Drive binding", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "brainhub-config-"));
+    const loadBinding = async (permissionId: string, rootFolderId: string) => {
+      const configFile = join(homeDir, `${permissionId}-${rootFolderId}.toml`);
+      const config = createDefaultConfig({
+        hostname: "macbook",
+        homeDir,
+        platform: "darwin",
+      });
+      config.drive.accountPermissionId = permissionId;
+      config.drive.rootFolderId = rootFolderId;
+      await writeConfig(configFile, config);
+      return loadConfig({
+        homeDir,
+        hostname: "macbook",
+        platform: "darwin",
+        configFile,
+        env: {},
+      });
+    };
+
+    const first = await loadBinding("permission-a", "root-a");
+    const second = await loadBinding("permission-b", "root-b");
+    const rebound = await loadBinding("permission-a", "root-c");
+
+    expect(first.paths.stateFile).not.toBe(second.paths.stateFile);
+    expect(first.paths.searchIndexFile).not.toBe(second.paths.searchIndexFile);
+    expect(first.paths.stateFile).not.toBe(rebound.paths.stateFile);
+    expect(first.paths.searchIndexFile).not.toBe(rebound.paths.searchIndexFile);
+    expect(first.paths.stateFile).toContain("/accounts/");
+    expect(first.paths.stateFile).not.toContain("permission-a");
+    expect(first.paths.modelCache).toBe(second.paths.modelCache);
+  });
+
   it("resolves CLI over env over file over defaults", () => {
     const defaults = createDefaultConfig({
       hostname: "default-host",

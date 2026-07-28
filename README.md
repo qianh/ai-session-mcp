@@ -1,90 +1,84 @@
 # BrainHub MCP
 
-BrainHub MCP 是一个本地 Node.js/TypeScript stdio MCP 服务。它只读取 Claude Code、Codex CLI 和 Grok Build 的顶层会话，过滤系统提示、推理、工具参数/结果与子代理内容，在本地脱敏后将规范化快照写入 Google Drive，并提供混合语义搜索、画像拉取和状态查询。
+BrainHub MCP 是一个仅在本机运行的 macOS MCP 服务。它读取 Claude Code、Codex CLI 和 Grok Build 的顶层会话，脱敏后上传到用户自己选择的 Google Drive，并提供本地语义搜索、完整会话读取和数字画像读取。
 
-原生会话文件始终只读，不会删除或改写。Gemini CLI 暂未接入。
+原始 CLI 会话始终只读。BrainHub MCP 不包含 cards、周报、云端处理、遥测或自更新器。
 
-## 功能
+## 安装
 
-- `upload_sessions`：全量回填或增量上传；会话写入 `inbox/<device>/`，图片按 SHA-256 去重、转为 WebP 后写入 `inbox/_assets/sha256/`。
-- `search_sessions`：依次检索 `cards`、`sessions`、`inbox`，结合关键词和本地 E5 向量排序。
-- `get_portrait`：始终读取 My Drive 根目录的 `Digital_Twin_Profile.md`，并尝试刷新本地 `portrait.md`。
-- `pull_portrait`：将数字分身同步为本地 `portrait.md`，同时拉取 BrainHub 最新周报；周报尚未发布时仍会独立更新画像。
-- `hub_status`：汇总 Drive 配额、inbox 积压、蒸馏状态、容量和本地适配器/调度状态。
-
-## 安装与验证
-
-要求 Node.js 22+ 和 pnpm。
+第一版要求 macOS 与 Node.js `>=22.12.0`。
 
 ```bash
-pnpm install
+npm install -g brainhub-mcp
+brainhub-mcp setup
+```
+
+`setup` 会依次完成：
+
+1. 打开浏览器，让用户选择自己的 Google 账号并授权 Google Drive。
+2. 创建或绑定该账号 My Drive 根目录下的 `brain-hub/`。若存在多个同名目录，流程会停止并要求用户明确选择。
+3. 下载固定版本的 `Xenova/multilingual-e5-small`，并显示进度。
+4. 统计本机可回填会话的数量与字节数；默认确认后上传历史会话。
+5. 自动注册已安装的 MCP 客户端，并安装每日上传 launchd 任务。
+6. 如显式指定 Obsidian vault，安装独立的每日画像覆盖任务。
+
+流程可以重复运行。`setup` 会实时验证已有 Google 凭据与账号身份，并复用已完成的账号绑定、回填决定、客户端注册和 launchd 配置；未完成且仍有待重试项的回填会继续执行，不会再次询问。
+
+## MCP 工具
+
+- `upload_sessions`：上传新增或变化的 CLI 会话到 `brain-hub/inbox/<device>/`。
+- `search_sessions`：刷新本地 inbox 索引并执行语义与关键词混合搜索。
+- `get_session`：使用 `{source, conversation_id}` 返回 Drive 中的完整 inbox 会话。
+- `get_portrait`：只读并完整返回 My Drive 根目录的 `Digital_Twin_Profile.md`。
+- `hub_status`：返回账号、root、上传、模型、索引、launchd、画像、Obsidian 和 npm 版本状态。
+
+`get_portrait` 不写 Obsidian。只有每日 `portrait sync` 任务会原子覆盖 `<vault>/BrainHub/portrait.md`；它不生成历史版本，也不读取周报。
+
+## 账号与数据
+
+一份配置只绑定一个当前 Google 账号，但可随时切换：
+
+```bash
+brainhub-mcp auth switch
+# 非交互接受新绑定的首次历史回填
+brainhub-mcp auth switch --yes
+```
+
+每个“Google 账号 + 选定的 `brain-hub` root”绑定都有独立的上传水位、回填决定、重试状态和本地搜索索引。切换到首次使用的绑定时会执行与 `setup` 相同的历史回填确认；切回已完成的绑定时直接恢复原状态。refresh token 只进入 macOS Keychain，不写入 TOML、SQLite 或日志。
+
+会话与图片只写入 `brain-hub/inbox/`。搜索的脱敏文本分块、向量、manifest 和 Drive change cursor 只保存在当前 Mac 的 SQLite 中，不写回 Drive。模型不可用时自动降级为关键词搜索，恢复后自动补齐缺失向量；Drive 刷新失败时保留旧 cursor 和最近有效索引并标记 stale。
+
+## 升级与卸载
+
+`hub_status` 最多每 24 小时查询一次 npm 最新版本。升级必须由用户主动执行：
+
+```bash
+npm install -g brainhub-mcp@latest
+```
+
+完整卸载：
+
+```bash
+brainhub-mcp uninstall
+```
+
+卸载会移除 MCP 客户端注册、launchd、Google OAuth 授权、Keychain 凭据、配置、本地索引、状态和模型缓存。它不会删除或改写 Google Drive 与 Obsidian 中的任何内容。
+
+## 源码开发
+
+官方 npm 包在发布时注入 BrainHub 的 Desktop OAuth 配置。源码构建与 fork 必须使用自己的 Google Cloud Desktop OAuth Client，不得提交 client secret 或 refresh token。
+
+```bash
+pnpm install --frozen-lockfile
 pnpm test
 pnpm typecheck
 pnpm lint
+pnpm format:check
 pnpm build
-pnpm link --global
 ```
 
-先运行不接触 Google Drive 的真实扫描：
+详细配置与源码 OAuth 方法见 [docs/configuration.md](docs/configuration.md)，数据使用与删除说明见 [docs/privacy.md](docs/privacy.md)。
 
-```bash
-brain-mcp upload --backfill --dry-run --json
-```
+## 许可
 
-dry-run 不需要 OAuth 或 Drive 根目录，不写状态数据库、不下载向量模型，也不修改客户端和系统调度配置。输出只有数量、字节估算和警告，不包含消息正文。
-
-## 部署门
-
-完成 dry-run 审阅后，才执行 live 初始化：
-
-```bash
-brain-mcp config init
-brain-mcp auth login
-brain-mcp auth status --json
-brain-mcp upload --backfill --json
-brain-mcp clients install --all
-```
-
-`clients install` 在成功注册 MCP 客户端后，会自动安装两份本地任务：默认 `02:00` 执行 `upload --sources claude-code,codex,grok-build --json`，默认 `06:00` 检查 Drive 发布结果并将新版画像和周报同步到 Obsidian。时间可通过配置或 `BRAINHUB_SCHEDULE_AT`、`BRAINHUB_SYNC_AT` 修改。正常安装不需要再执行单独的 scheduler 命令；`--no-scheduler` 会同时跳过上传和同步任务。
-
-每日上传按来源分别维护本地 SQLite 水位，只扫描水位后的文件和待重试文件。单一来源解析失败不会推进该来源水位，也不会阻塞其他来源。上传过程只读取和修改 `brain-hub/inbox/`，不会枚举或更新远程其他目录。
-
-`auth login` 会打开 Google 账号选择页。用户在浏览器中选中的账号会成为当前配置的 BrainHub 账号；命令随后读取该账号的 Drive 身份并创建或复用它自己的 `brain-hub` 根目录。重新运行该命令即可切换账号。OAuth token 不会出现在命令输出或 TOML 中。
-
-OAuth client JSON 只标识 BrainHub 应用，不决定最终使用哪个 Google 账号。其他电脑或其他用户应独立安装、运行 `auth login` 并选择自己的账号，不能复制他人的 refresh token 或 `root_folder_id`。如果 OAuth consent screen 仍处于 Testing，Google Cloud 项目还必须允许该账号作为 test user；正式供外部用户使用前，需要按 Google 对完整 Drive scope 的要求完成发布/验证。
-
-历史会话很多时，可提高并发执行一次显式回填：
-
-```bash
-BRAINHUB_UPLOAD_CONCURRENCY=32 brain-mcp upload --backfill --json
-```
-
-默认并发由 `upload.concurrency` 控制，环境变量 `BRAINHUB_UPLOAD_CONCURRENCY` 可只覆盖当前命令。会话上传不再自动刷新搜索索引；需要维护索引时单独执行 `brain-mcp search sync --json`，需要完整重建时执行 `brain-mcp search reindex --json`。
-
-Claude Desktop 是显式可选项：
-
-```bash
-brain-mcp clients install claude --desktop
-```
-
-调度器的状态检查、修复安装和卸载仍可通过 `brain-mcp scheduler status|install|uninstall` 单独完成。
-
-本仓库实现阶段不会自动执行上述 live 命令。
-
-## 本地磁盘
-
-默认使用量化 `Xenova/multilingual-e5-small`，模型缓存约 118 MB，首次显式执行搜索索引同步时下载一次。384 维向量对象存入 Drive，本地不保留向量数据库或会话正文；本地长期数据只有模型缓存及一个仅含哈希、水位、设备 ID 和错误码的 SQLite 文件。
-
-缓存位置：
-
-- macOS：`~/Library/Caches/BrainHub/models`
-- Linux：`${XDG_CACHE_HOME:-~/.cache}/brain-mcp/models`
-
-查看或清理：
-
-```bash
-brain-mcp search model status --json
-brain-mcp search model clear --json
-```
-
-详细配置、隐私边界和每日调度行为见 [docs/configuration.md](docs/configuration.md)。
+Apache License 2.0。安全问题请使用 GitHub Security Advisory 私下报告。
