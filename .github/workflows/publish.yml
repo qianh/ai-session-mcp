@@ -1,6 +1,7 @@
 name: Publish npm package
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -25,5 +26,6 @@ jobs:
       - run: npm install --global npm@^11.15.0
       - run: npm publish --access public
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           BRAINHUB_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.BRAINHUB_GOOGLE_OAUTH_CLIENT_ID }}
           BRAINHUB_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.BRAINHUB_GOOGLE_OAUTH_CLIENT_SECRET }}
