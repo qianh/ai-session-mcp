@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -22,5 +22,22 @@ describe("CLI package entry", () => {
     );
 
     expect(stdout).toContain("Usage: brainhub-mcp");
+  });
+
+  it("reports the version from package metadata", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "brainhub-cli-version-"));
+    const entry = join(directory, "brainhub-mcp");
+    await symlink(resolve(repository, "src", "cli", "index.ts"), entry);
+    const packageJson = JSON.parse(
+      await readFile(resolve(repository, "package.json"), "utf8"),
+    ) as { version: string };
+
+    const { stdout } = await execute(
+      process.execPath,
+      ["--import", "tsx", entry, "--version"],
+      { cwd: repository },
+    );
+
+    expect(stdout.trim()).toBe(packageJson.version);
   });
 });

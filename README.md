@@ -77,6 +77,15 @@ pnpm format:check
 pnpm build
 ```
 
+推送到 `master` 后，GitHub Actions 会根据 Conventional Commits 自动决定版本、创建 Git tag 与 GitHub Release，并通过 npm Trusted Publishing 发布：
+
+- `fix:` 或 `perf:` 发布补丁版本。
+- `feat:` 发布次版本。
+- 提交正文包含 `BREAKING CHANGE:` 时发布主版本。
+- `docs:`、`chore:`、`test:` 等不会发布 npm 新版本。
+
+不要手工修改版本号、创建 Release 或运行 `npm publish`。
+
 详细配置与源码 OAuth 方法见 [docs/configuration.md](docs/configuration.md)，数据使用与删除说明见 [docs/privacy.md](docs/privacy.md)。
 
 ## 许可

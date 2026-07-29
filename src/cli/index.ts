@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
@@ -58,6 +58,12 @@ import {
 } from "../setup/uninstall-service.js";
 import { discoverPublishDirectory } from "../portrait/obsidian.js";
 import { SqliteStateStore } from "../state/sqlite-store.js";
+
+const PACKAGE_VERSION = (
+  JSON.parse(
+    readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+).version;
 
 export interface CliDependencies {
   writeOutput?: (value: string) => void;
@@ -135,7 +141,7 @@ export async function runCli(
   program
     .name("brainhub-mcp")
     .description("BrainHub local session MCP")
-    .version("0.1.1")
+    .version(PACKAGE_VERSION)
     .option("--config <path>", "configuration file");
 
   const load = async (): Promise<LoadedConfig> =>

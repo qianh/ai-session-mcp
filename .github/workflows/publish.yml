@@ -1,29 +1,37 @@
-name: Publish npm package
+name: Release npm package
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [master]
 
 permissions:
-  contents: read
+  contents: write
+  issues: write
+  pull-requests: write
   id-token: write
 
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  release:
     runs-on: macos-14
     environment: npm
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           version: 10.26.0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - run: npm install --global npm@^11.15.0
-      - run: npm publish --access public
+      - run: npx --yes semantic-release@25.0.8
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRAINHUB_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.BRAINHUB_GOOGLE_OAUTH_CLIENT_ID }}
           BRAINHUB_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.BRAINHUB_GOOGLE_OAUTH_CLIENT_SECRET }}

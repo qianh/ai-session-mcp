@@ -78,5 +78,10 @@
       "protobufjs",
       "sharp"
     ]
+  },
+  "release": {
+    "branches": [
+      "master"
+    ]
   }
 }
