@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
 import { google, type drive_v3 } from "googleapis";
@@ -134,7 +135,7 @@ export async function runCli(
   program
     .name("brainhub-mcp")
     .description("BrainHub local session MCP")
-    .version("0.1.0")
+    .version("0.1.1")
     .option("--config <path>", "configuration file");
 
   const load = async (): Promise<LoadedConfig> =>
@@ -1001,7 +1002,8 @@ export async function runCli(
 
 const invokedDirectly =
   process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+  realpathSync(fileURLToPath(import.meta.url)) ===
+    realpathSync(resolve(process.argv[1]));
 if (invokedDirectly) {
   runCli().catch((error: unknown) => {
     const candidate = error as { code?: unknown; message?: unknown };
