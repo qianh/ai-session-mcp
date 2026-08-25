@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+## 0.1.2 - 2026-08-25
+
+- Add local Cursor agent transcript capture, redaction, upload, search, and complete session retrieval.
+- Make new daily upload jobs source-neutral so future capture sources follow runtime defaults.
+- Exclude Cursor-injected tool, MCP, and Hook context from user messages.
+- Persist the approved backfill source scope so upgrades cannot silently add new sources.
+
 ## 0.1.0
 
 - Publish the macOS-only `brainhub-mcp` package with guided setup.

@@ -77,6 +77,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): ConfigLayer {
       claudePaths: env.BRAINHUB_CLAUDE_PATHS?.split(delimiter),
       codexPaths: env.BRAINHUB_CODEX_PATHS?.split(delimiter),
       grokPaths: env.BRAINHUB_GROK_PATHS?.split(delimiter),
+      cursorPaths: env.BRAINHUB_CURSOR_PATHS?.split(delimiter),
       includeSubagents: booleanEnv(env.BRAINHUB_INCLUDE_SUBAGENTS),
     },
     publish: { fallbackPath: env.BRAINHUB_PUBLISH_FALLBACK_PATH },
@@ -170,6 +171,9 @@ export async function loadConfig(options: {
     expandHome(path, options.homeDir),
   );
   config.capture.grokPaths = config.capture.grokPaths.map((path) =>
+    expandHome(path, options.homeDir),
+  );
+  config.capture.cursorPaths = config.capture.cursorPaths.map((path) =>
     expandHome(path, options.homeDir),
   );
   config.drive.oauthClientFile = expandHome(

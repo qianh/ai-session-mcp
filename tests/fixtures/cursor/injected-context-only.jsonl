@@ -1,0 +1,3 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<dynamic_tool_catalog>private dynamic tool metadata</dynamic_tool_catalog>"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<mcp_server_catalog>private MCP metadata</mcp_server_catalog>"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<hooks_context>private hook instructions</hooks_context>"}]}}

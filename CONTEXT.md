@@ -9,8 +9,12 @@ BrainHub Personal Data defines the ownership and authorization language shared b
 _Avoid_: AI Session、Brain Capture
 
 **BrainHub MCP**:
-BrainHub 的本地会话采集与知识访问组件，负责上传本地 CLI 会话、执行 **会话搜索**，以及读取和同步 **每日画像**。它不生成画像，不处理周报，也不使用卡片。
+BrainHub 的本地会话采集与知识访问组件，负责上传 Claude Code、Codex CLI、Grok Build 和 Cursor 的本地 AI 编程会话、执行 **会话搜索**，以及读取和同步 **每日画像**。它不生成画像，不处理周报，也不使用卡片。
 _Avoid_: brain-mcp、ai-session-mcp、Capture MCP
+
+**Cursor 会话**:
+Cursor 写入 `~/.cursor/projects/**/agent-transcripts/*/*.jsonl` 的本地 agent transcript。BrainHub MCP 只把 user 记录中 `<user_query>` 内的内容视为用户输入，丢弃动态工具、MCP 与 Hook 注入上下文，并保留助手可见内容；它不读取 Cursor 的私有 SQLite/KV 状态或 `agent-tools/`。
+_Avoid_: state.vscdb 会话、Cursor 工具日志、任意 Cursor 项目文件
 
 **会话搜索**:
 从用户 **个人 Drive** 的 **Inbox 会话** 中查找相关内容，并返回摘要及 **会话引用**。搜索对象始终是会话，不包括卡片、其他蒸馏中间产物或未定义的归档目录。
@@ -45,7 +49,7 @@ _Avoid_: Drive ID、文件路径、只有 conversation_id
 _Avoid_: 搜索结果展开、任意文件读取
 
 **首次回填**:
-首次设置时，在展示各来源会话数量和预计体积并获得确认后，上传设备上已发现的全部顶层 CLI 历史会话。用户拒绝首次回填时，从确认时刻开始只处理后续新增会话。
+首次设置时，在展示各来源会话数量和预计体积并获得确认后，上传设备上已发现的全部本地 AI 编程历史会话，并持久化本次获准的来源集合。用户拒绝首次回填时，从确认时刻开始只处理后续新增会话；未来新增来源不能继承旧回填授权。
 _Avoid_: 静默上传、仅未来同步、子代理回填
 
 **客户端自动注册**:
@@ -141,7 +145,7 @@ _Avoid_: 多账号并发、共享水位、Capture 账号
 _Avoid_: 主机名身份、账号身份、可变设备 ID
 
 **跨设备会话**:
-同一 Google 账号下由一个或多个 **MCP 设备** 发现的 CLI 会话。远端以来源和来源内会话标识去重，使多台设备上传同一会话时收敛为一条内容。
+同一 Google 账号下由一个或多个 **MCP 设备** 发现的本地 AI 编程会话。远端以来源和来源内会话标识去重，使多台设备上传同一会话时收敛为一条内容。
 _Avoid_: 按设备复制会话、按文件路径去重、按主机名去重
 
 **账号切换**:
@@ -178,7 +182,7 @@ _Avoid_: npm 卸载脚本、删除 Drive 数据、删除 Obsidian 文件、残�
 >
 > 领域专家：不沿用。每个账号独立保存水位；首次使用 B 时回填，切回 A 时恢复 A 的进度。
 
-> 开发：两台同名电脑上传同一个 CLI 会话时，要保留两个副本吗？
+> 开发：两台同名电脑上传同一个本地 AI 编程会话时，要保留两个副本吗？
 >
 > 领域专家：不要。设备 ID 彼此独立，但同一来源中的同一会话应收敛为一条内容。
 

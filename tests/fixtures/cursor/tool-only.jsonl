@@ -1,0 +1,2 @@
+{"role":"assistant","message":{"content":[{"type":"thinking","text":"private reasoning"},{"type":"tool_use","name":"read_file","input":{"path":"secret-tool-path"}}]}}
+{"type":"turn_ended","status":"completed"}

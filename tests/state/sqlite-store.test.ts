@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SqliteStateStore } from "../../src/state/sqlite-store.js";
@@ -103,6 +104,7 @@ describe("SQLite state store", () => {
       sessions: 12,
       bytes: 4096,
       decidedAt,
+      sources: ["claude-code", "codex", "grok-build", "cursor"],
     });
 
     expect(store.getBackfillState()).toEqual({
@@ -112,10 +114,12 @@ describe("SQLite state store", () => {
       uploaded: 0,
       decidedAt,
       completedAt: decidedAt,
+      sources: ["claude-code", "codex", "grok-build", "cursor"],
     });
     expect(store.getDiscoveryWatermark("claude-code")).toBe(decidedAt);
     expect(store.getDiscoveryWatermark("codex")).toBe(decidedAt);
     expect(store.getDiscoveryWatermark("grok-build")).toBe(decidedAt);
+    expect(store.getDiscoveryWatermark("cursor")).toBe(decidedAt);
   });
 
   it("keeps accepted backfill incomplete until no retryable uploads remain", async () => {
@@ -145,6 +149,42 @@ describe("SQLite state store", () => {
     expect(store.getBackfillState()).toMatchObject({
       uploaded: 3,
       completedAt: "2026-07-28T02:02:00.000Z",
+    });
+  });
+
+  it("migrates a pre-source-scope backfill decision as legacy", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "brainhub-state-legacy-"));
+    const path = join(directory, "state.sqlite");
+    const database = new Database(path);
+    database.exec(`
+      CREATE TABLE setup_backfill (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        decision TEXT NOT NULL CHECK (decision IN ('accepted', 'declined')),
+        sessions INTEGER NOT NULL,
+        bytes INTEGER NOT NULL,
+        uploaded INTEGER NOT NULL DEFAULT 0,
+        decided_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+      INSERT INTO setup_backfill(
+        singleton, decision, sessions, bytes, uploaded, decided_at, completed_at
+      ) VALUES (
+        1, 'accepted', 3, 2048, 2, '2026-07-28T02:00:00.000Z', NULL
+      );
+    `);
+    database.close();
+
+    const store = new SqliteStateStore(path);
+    stores.push(store);
+
+    expect(store.getBackfillState()).toEqual({
+      decision: "accepted",
+      sessions: 3,
+      bytes: 2048,
+      uploaded: 2,
+      decidedAt: "2026-07-28T02:00:00.000Z",
+      completedAt: null,
+      sources: null,
     });
   });
 

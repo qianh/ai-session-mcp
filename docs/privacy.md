@@ -4,9 +4,11 @@ BrainHub MCP 在用户自己的 Mac 上运行，不经过 BrainHub 采集服务�
 
 ## 读取与上传
 
-MCP 只读取 Claude Code、Codex CLI 和 Grok Build 的顶层会话。默认排除 system/developer prompt、隐藏推理、工具参数和结果、环境快照、shell 输出与子代理会话。原始文件始终只读。
+MCP 只读取 Claude Code、Codex CLI、Grok Build 和 Cursor 的本地会话。默认排除 system/developer prompt、隐藏推理、工具参数和结果、环境快照与 shell 输出；Claude Code、Codex CLI 和 Grok Build 的子代理会话也默认排除。Cursor 只读取 `~/.cursor/projects/**/agent-transcripts/*/*.jsonl`，且 user 记录中只有 `<user_query>` 内的内容会作为用户消息；动态工具目录、MCP server 目录、Hook 上下文等注入记录会被丢弃。MCP 不读取 `state.vscdb`、`conversation-search.db` 或 `agent-tools/`。所有原始文件始终只读。
 
 上传前会处理 bearer token、密码赋值、私钥、常见 API key、凭据 URL，以及用户配置的内部域名和 CIDR。规范化后的会话与图片只写入所选 Google 账号的 `brain-hub/inbox/`。
+
+历史回填决定会持久化确认时的来源集合。升级不会重置决定，也不会把旧版未完成回填的三来源授权扩大到 Cursor。只有用户显式运行 `brainhub-mcp upload --sources cursor --backfill` 时才回填旧 Cursor 会话；否则从首次升级扫描时建立水位，只处理之后新增或变化的 transcript。
 
 ## 本地数据
 

@@ -7,11 +7,12 @@ import {
 } from "../../src/domain/session.js";
 
 describe("session domain", () => {
-  it("accepts only the three approved sources", () => {
+  it("accepts only the four approved sources", () => {
     expect(SessionSourceSchema.options).toEqual([
       "claude-code",
       "codex",
       "grok-build",
+      "cursor",
     ]);
     expect(() => SessionSourceSchema.parse("gemini-cli")).toThrow();
   });

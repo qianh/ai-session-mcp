@@ -6,6 +6,7 @@ import fg from "fast-glob";
 import type { NormalizedSession, SessionSource } from "../domain/session.js";
 import { parseClaudeSession } from "./claude.js";
 import { parseCodexSession } from "./codex.js";
+import { parseCursorSession } from "./cursor.js";
 import { parseGrokSession } from "./grok.js";
 import type { AdapterResult } from "./types.js";
 
@@ -13,7 +14,12 @@ export interface DiscoveryOptions {
   device: string;
   includeSubagents: boolean;
   sources: SessionSource[];
-  paths: { claude: string[]; codex: string[]; grok: string[] };
+  paths: {
+    claude: string[];
+    codex: string[];
+    grok: string[];
+    cursor: string[];
+  };
   modifiedAfter?: Partial<Record<SessionSource, string>>;
   includePaths?: string[];
 }
@@ -31,7 +37,7 @@ export interface DiscoveryResult {
   skippedSubagents: number;
   malformed: number;
   warnings: Array<{ code: string; message: string }>;
-  status: Record<"claude" | "codex" | "grok", DiscoveryStatus>;
+  status: Record<"claude" | "codex" | "grok" | "cursor", DiscoveryStatus>;
 }
 
 const emptyStatus = (): DiscoveryStatus => ({
@@ -82,6 +88,7 @@ export async function discoverSessions(
     claude: emptyStatus(),
     codex: emptyStatus(),
     grok: emptyStatus(),
+    cursor: emptyStatus(),
   };
   const output: DiscoveryResult = {
     sessions: [],
@@ -152,6 +159,25 @@ export async function discoverSessions(
         name: "grok" as const,
         path: dirname(path),
         parse: () => parseGrokSession(dirname(path), parserOptions),
+      })),
+    );
+  }
+  if (options.sources.includes("cursor")) {
+    const paths = await incrementalFiles(
+      await globFiles(
+        options.paths.cursor.map((root) =>
+          join(root, "**", "agent-transcripts", "*", "*.jsonl"),
+        ),
+      ),
+      options.modifiedAfter?.cursor,
+      includePaths,
+    );
+    status.cursor.discovered = paths.length;
+    work.push(
+      ...paths.map((path) => ({
+        name: "cursor" as const,
+        path,
+        parse: () => parseCursorSession(path, parserOptions),
       })),
     );
   }

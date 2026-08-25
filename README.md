@@ -1,8 +1,8 @@
 # BrainHub MCP
 
-BrainHub MCP 是一个仅在本机运行的 macOS MCP 服务。它读取 Claude Code、Codex CLI 和 Grok Build 的顶层会话，脱敏后上传到用户自己选择的 Google Drive，并提供本地语义搜索、完整会话读取和数字画像读取。
+BrainHub MCP 是一个仅在本机运行的 macOS MCP 服务。它读取 Claude Code、Codex CLI、Grok Build 和 Cursor 的本地会话，脱敏后上传到用户自己选择的 Google Drive，并提供本地语义搜索、完整会话读取和数字画像读取。
 
-原始 CLI 会话始终只读。BrainHub MCP 不包含 cards、周报、云端处理、遥测或自更新器。
+原始会话始终只读。BrainHub MCP 不包含 cards、周报、云端处理、遥测或自更新器。
 
 ## 安装
 
@@ -24,9 +24,18 @@ brainhub-mcp setup
 
 流程可以重复运行。`setup` 会实时验证已有 Google 凭据与账号身份，并复用已完成的账号绑定、回填决定、客户端注册和 launchd 配置；未完成且仍有待重试项的回填会继续执行，不会再次询问。
 
+## 会话来源
+
+- Claude Code：`~/.claude/projects/**/*.jsonl`
+- Codex CLI：`~/.codex/sessions/**/rollout-*.jsonl`
+- Grok Build：`~/.grok/sessions/**/chat_history.jsonl`
+- Cursor：`~/.cursor/projects/**/agent-transcripts/*/*.jsonl`
+
+默认只保留用户与助手的可见文本和图片；system/developer prompt、隐藏推理、工具调用参数与结果、环境快照和 shell 输出不会进入规范化会话。Claude Code、Codex CLI 和 Grok Build 的 sidechain/subagent 默认排除；Cursor 只采集 user 记录中显式的 `<user_query>` 内容，并丢弃动态工具、MCP 与 Hook 注入上下文。Cursor 采集只扫描上述精确的 agent transcript 层级，不读取 `state.vscdb` 或 `agent-tools/`。
+
 ## MCP 工具
 
-- `upload_sessions`：上传新增或变化的 CLI 会话到 `brain-hub/inbox/<device>/`。
+- `upload_sessions`：上传新增或变化的本地 AI 编程会话到 `brain-hub/inbox/<device>/`。
 - `search_sessions`：刷新本地 inbox 索引并执行语义与关键词混合搜索。
 - `get_session`：使用 `{source, conversation_id}` 返回 Drive 中的完整 inbox 会话。
 - `get_portrait`：只读并完整返回 My Drive 根目录的 `Digital_Twin_Profile.md`。
@@ -54,6 +63,12 @@ brainhub-mcp auth switch --yes
 
 ```bash
 npm install -g brainhub-mcp@latest
+```
+
+从不支持 Cursor 的旧版本升级后，运行一次 `brainhub-mcp setup` 或 `brainhub-mcp scheduler install`，以便用新的来源无关任务替换旧的三来源 launchd 参数。历史回填决定会保存当时获准的来源范围；旧版未完成回填重试时仍只处理原三来源，不会静默上传旧 Cursor 会话。如需回填，显式执行：
+
+```bash
+brainhub-mcp upload --sources cursor --backfill
 ```
 
 完整卸载：

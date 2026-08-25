@@ -1,7 +1,3 @@
-export const dailyUploadArguments = [
-  "upload",
-  "--sources",
-  "claude-code,codex,grok-build",
-] as const;
+export const dailyUploadArguments = ["upload"] as const;
 
 export const portraitSyncArguments = ["portrait", "sync"] as const;

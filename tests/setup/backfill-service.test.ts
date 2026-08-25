@@ -49,6 +49,12 @@ describe("first backfill workflow", () => {
     expect(inspect).toHaveBeenCalledOnce();
     expect(confirm).toHaveBeenCalledOnce();
     expect(upload).toHaveBeenCalledOnce();
+    expect(upload).toHaveBeenCalledWith([
+      "claude-code",
+      "codex",
+      "grok-build",
+      "cursor",
+    ]);
   });
 
   it("retries pending uploads without repeating inspection or confirmation", async () => {
@@ -106,6 +112,48 @@ describe("first backfill workflow", () => {
     });
     expect(inspect).toHaveBeenCalledOnce();
     expect(confirm).toHaveBeenCalledOnce();
+  });
+
+  it("retries a legacy accepted backfill with only its original sources", async () => {
+    const legacyState = {
+      decision: "accepted" as const,
+      sessions: 3,
+      bytes: 2048,
+      uploaded: 2,
+      decidedAt: "2026-07-28T02:00:00.000Z",
+      completedAt: null,
+      sources: null,
+    };
+    const upload = vi.fn(async () => ({
+      uploaded: 1,
+      pending: 0,
+    }));
+    const state = {
+      getBackfillState: vi
+        .fn()
+        .mockReturnValueOnce(legacyState)
+        .mockReturnValueOnce({
+          ...legacyState,
+          uploaded: 3,
+          completedAt: "2026-08-25T02:00:00.000Z",
+        }),
+      recordBackfillDecision: vi.fn(),
+      recordBackfillUpload: vi.fn(),
+    };
+    const service = new BackfillService({
+      state,
+      inspect: vi.fn(async () => ({ sessions: 0, bytes: 0 })),
+      confirm: vi.fn(async () => true),
+      upload,
+      report: () => undefined,
+      now: () => "2026-08-25T02:00:00.000Z",
+    });
+
+    await expect(service.run()).resolves.toMatchObject({
+      uploaded: 3,
+      completed: true,
+    });
+    expect(upload).toHaveBeenCalledWith(["claude-code", "codex", "grok-build"]);
   });
 
   it("persists a decline and never inspects or prompts again", async () => {

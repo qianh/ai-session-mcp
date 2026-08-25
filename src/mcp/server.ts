@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import type { SessionSource } from "../domain/session.js";
+import { SessionSourceSchema, type SessionSource } from "../domain/session.js";
 
 interface RuntimeServices {
   uploadSessions(input: {
@@ -143,12 +143,12 @@ export function createToolHandlers(services: RuntimeServices) {
 export function createMcpServer(services: RuntimeServices): McpServer {
   const server = new McpServer({ name: "brainhub-mcp", version: "0.1.0" });
   const handlers = createToolHandlers(services);
-  const source = z.enum(["claude-code", "codex", "grok-build"]);
+  const source = SessionSourceSchema;
 
   server.registerTool(
     "upload_sessions",
     {
-      description: "扫描、脱敏并增量上传本机 AI CLI 会话到 BrainHub",
+      description: "扫描、脱敏并增量上传本机 AI 编程会话到 BrainHub",
       inputSchema: {
         sources: z.array(source).optional(),
         backfill: z.boolean().optional(),
@@ -161,7 +161,7 @@ export function createMcpServer(services: RuntimeServices): McpServer {
   server.registerTool(
     "search_sessions",
     {
-      description: "搜索 BrainHub inbox 中的 AI CLI 会话",
+      description: "搜索 BrainHub inbox 中的 AI 编程会话",
       inputSchema: {
         query: z.string().min(1),
         from: z.string().optional(),

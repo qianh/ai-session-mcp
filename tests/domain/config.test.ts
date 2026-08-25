@@ -37,7 +37,10 @@ describe("configuration", () => {
         accountDisplayName: "",
         accountPermissionId: "",
       },
-      capture: { includeSubagents: false },
+      capture: {
+        cursorPaths: ["/Users/test/.cursor/projects"],
+        includeSubagents: false,
+      },
       upload: { batchSize: 100, concurrency: 4 },
       search: {
         dimensions: 384,
@@ -82,6 +85,23 @@ describe("configuration", () => {
       accountDisplayName: "",
       accountPermissionId: "",
     });
+    expect(loaded.config.capture.cursorPaths).toEqual([
+      join(homeDir, ".cursor", "projects"),
+    ]);
+  });
+
+  it("loads and expands Cursor paths from the environment", async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), "brainhub-config-"));
+    const loaded = await loadConfig({
+      homeDir,
+      hostname: "cursor-device",
+      platform: "darwin",
+      env: { BRAINHUB_CURSOR_PATHS: "~/custom-cursor-projects" },
+    });
+
+    expect(loaded.config.capture.cursorPaths).toEqual([
+      join(homeDir, "custom-cursor-projects"),
+    ]);
   });
 
   it("scopes upload and search state to the active Drive binding", async () => {

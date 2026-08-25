@@ -33,6 +33,7 @@ export interface BackfillState {
   uploaded: number;
   decidedAt: string;
   completedAt: string | null;
+  sources: SessionSource[] | null;
 }
 
 export interface BackfillDecisionInput {
@@ -40,6 +41,7 @@ export interface BackfillDecisionInput {
   sessions: number;
   bytes: number;
   decidedAt: string;
+  sources?: SessionSource[];
 }
 
 export interface BackfillUploadInput {

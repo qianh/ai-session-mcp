@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseClaudeSession } from "../../src/adapters/claude.js";
 import { parseCodexSession } from "../../src/adapters/codex.js";
+import { parseCursorSession } from "../../src/adapters/cursor.js";
 import { parseGrokSession } from "../../src/adapters/grok.js";
 
 const fixture = (...parts: string[]) =>
@@ -68,6 +69,73 @@ describe("source adapters", () => {
       includeSubagents: false,
     });
     expect(result.skippedSubagent).toBe(true);
+  });
+
+  it("parses visible Cursor messages without reasoning or tool calls", async () => {
+    const result = await parseCursorSession(
+      fixture("cursor", "top-level.jsonl"),
+      {
+        device: "test-device",
+        includeSubagents: false,
+      },
+    );
+
+    expect(result).toMatchObject({
+      malformedLines: 1,
+      skippedSubagent: false,
+      session: {
+        source: "cursor",
+        conversationId: "top-level",
+        turns: [
+          {
+            role: "user",
+            text: "Review the query. Authorization: Bearer cursor-secret-value",
+            images: [],
+          },
+          { role: "assistant", text: "Use the indexed path.", images: [] },
+        ],
+      },
+    });
+    expect(result.session?.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect(result.session?.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect(result.session!.startedAt <= result.session!.updatedAt).toBe(true);
+    expect(JSON.stringify(result.session)).not.toContain("private reasoning");
+    expect(JSON.stringify(result.session)).not.toContain("secret-tool-path");
+    expect(JSON.stringify(result.session)).not.toContain("tool metadata");
+    expect(JSON.stringify(result.session)).not.toContain("<timestamp>");
+    expect(JSON.stringify(result.session)).not.toContain("<user_query>");
+  });
+
+  it("ignores Cursor user-role records that contain only injected context", async () => {
+    const result = await parseCursorSession(
+      fixture("cursor", "injected-context-only.jsonl"),
+      {
+        device: "test-device",
+        includeSubagents: false,
+      },
+    );
+
+    expect(result).toEqual({
+      session: null,
+      skippedSubagent: false,
+      malformedLines: 0,
+    });
+  });
+
+  it("ignores Cursor transcripts with no visible messages", async () => {
+    const result = await parseCursorSession(
+      fixture("cursor", "tool-only.jsonl"),
+      {
+        device: "test-device",
+        includeSubagents: false,
+      },
+    );
+
+    expect(result).toEqual({
+      session: null,
+      skippedSubagent: false,
+      malformedLines: 0,
+    });
   });
 
   it("parses Grok chat history and skips tool/system records", async () => {

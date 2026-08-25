@@ -9,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 
 import type { SecretStore } from "../../src/auth/secret-store.js";
@@ -17,9 +18,25 @@ import { createDefaultConfig, platformPaths } from "../../src/domain/config.js";
 import { conversationKey } from "../../src/domain/session.js";
 import { MemoryDrive } from "../../src/drive/memory-drive.js";
 import { BrainHubRuntime } from "../../src/runtime/container.js";
+import type { Embedder } from "../../src/search/embedder.js";
+import { SearchService } from "../../src/search/search-service.js";
 import { SqliteStateStore } from "../../src/state/sqlite-store.js";
 
 const fixtures = resolve(import.meta.dirname, "..", "fixtures");
+
+class UnavailableEmbedder implements Embedder {
+  readonly model = "cursor-runtime-test";
+  readonly revision = "v1";
+  readonly dimensions = 3;
+
+  async embedQuery(): Promise<number[]> {
+    throw new Error("model unavailable");
+  }
+
+  async embedPassages(): Promise<number[][]> {
+    throw new Error("model unavailable");
+  }
+}
 
 async function runtimeFixture(
   options: {
@@ -66,11 +83,20 @@ function configureSourceRoots(
     claude: join(histories, "claude"),
     codex: join(histories, "codex"),
     grok: join(histories, "grok"),
+    cursor: join(histories, "cursor"),
   };
   config.capture.claudePaths = [roots.claude];
   config.capture.codexPaths = [roots.codex];
   config.capture.grokPaths = [roots.grok];
+  config.capture.cursorPaths = [roots.cursor];
   return roots;
+}
+
+async function writeCursorFixture(root: string, id = "cursor-1") {
+  const path = join(root, "workspace", "agent-transcripts", id, `${id}.jsonl`);
+  await mkdir(dirname(path), { recursive: true });
+  await cp(join(fixtures, "cursor", "top-level.jsonl"), path);
+  return path;
 }
 
 async function writeSourceFixtures(
@@ -86,6 +112,7 @@ async function writeSourceFixtures(
     mkdir(dirname(codex), { recursive: true }),
     mkdir(grok, { recursive: true }),
   ]);
+  const cursor = await writeCursorFixture(roots.cursor);
   await Promise.all([
     cp(join(fixtures, "claude", "top-level.jsonl"), claude),
     cp(join(fixtures, "codex", "top-level.jsonl"), codex),
@@ -97,7 +124,7 @@ async function writeSourceFixtures(
           join(grok, "summary.json"),
         ),
   ]);
-  return { claude, codex, grok, grokHistory };
+  return { claude, codex, grok, grokHistory, cursor };
 }
 
 describe("BrainHub runtime", () => {
@@ -256,6 +283,55 @@ describe("BrainHub runtime", () => {
     runtime.close();
   });
 
+  it("uploads, redacts, searches, and reads a Cursor session", async () => {
+    const { runtime, config, paths, homeDir } = await runtimeFixture();
+    const roots = configureSourceRoots(homeDir, config);
+    await writeCursorFixture(roots.cursor, "cursor-session");
+    const drive = new MemoryDrive();
+    vi.spyOn(runtime, "drive").mockResolvedValue(drive);
+
+    const upload = await runtime.uploadSessions({
+      sources: ["cursor"],
+      backfill: true,
+    });
+
+    expect(upload).toMatchObject({
+      scanned: 1,
+      uploaded: 1,
+      redactions: 1,
+      adapters: { cursor: { captured: 1, malformed: 1, errors: 0 } },
+    });
+    const entry = (await drive.list({ prefix: "inbox/" })).find(
+      (candidate) => candidate.appProperties.source === "cursor",
+    )!;
+    const markdown = (await drive.read(entry.id)).bytes.toString("utf8");
+    expect(markdown).toContain("Authorization: Bearer [REDACTED]");
+    expect(markdown).not.toContain("cursor-secret-value");
+    expect(markdown).not.toContain("private reasoning");
+    expect(markdown).not.toContain("secret-tool-path");
+    expect(markdown).not.toContain("private tool metadata");
+
+    const search = await new SearchService({
+      drive,
+      embedder: new UnavailableEmbedder(),
+      indexPath: paths.searchIndexFile,
+    }).search({
+      query: "indexed path",
+      sources: ["cursor"],
+      limit: 10,
+    });
+    expect(search.results).toMatchObject([
+      { source: "cursor", conversationId: "cursor-session" },
+    ]);
+
+    const complete = await runtime.getSession({
+      source: "cursor",
+      conversationId: "cursor-session",
+    });
+    expect(complete.content).toBe(markdown);
+    runtime.close();
+  });
+
   it("returns local hub status when Drive is not configured", async () => {
     const { runtime } = await runtimeFixture();
 
@@ -270,6 +346,7 @@ describe("BrainHub runtime", () => {
         claude: { discovered: 0 },
         codex: { discovered: 0 },
         grok: { discovered: 0 },
+        cursor: { discovered: 0 },
       },
     });
     expect(result.model).toMatchObject({ ready: false, bytes: 0 });
@@ -390,7 +467,7 @@ describe("BrainHub runtime", () => {
     runtime.close();
   });
 
-  it("incrementally uploads all three local sources and performs no unchanged writes", async () => {
+  it("incrementally uploads all four local sources and performs no unchanged writes", async () => {
     const { runtime, config, paths, homeDir } = await runtimeFixture();
     const roots = configureSourceRoots(homeDir, config);
     const drive = new MemoryDrive();
@@ -407,24 +484,29 @@ describe("BrainHub runtime", () => {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
     const sourceFiles = await writeSourceFixtures(roots);
     await Promise.all(
-      [sourceFiles.claude, sourceFiles.codex, sourceFiles.grokHistory].map(
-        (path) => utimes(path, stableMtime, stableMtime),
-      ),
+      [
+        sourceFiles.claude,
+        sourceFiles.codex,
+        sourceFiles.grokHistory,
+        sourceFiles.cursor,
+      ].map((path) => utimes(path, stableMtime, stableMtime)),
     );
 
     const first = await runtime.uploadSessions({});
 
-    expect(first).toMatchObject({ scanned: 3, uploaded: 3 });
+    expect(first).toMatchObject({ scanned: 4, uploaded: 4 });
     expect(first.adapters).toMatchObject({
       claude: { captured: 1, malformed: 1, errors: 0 },
       codex: { captured: 1, errors: 0 },
       grok: { captured: 1, errors: 0 },
+      cursor: { captured: 1, malformed: 1, errors: 0 },
     });
     const before = await drive.list({ prefix: "inbox/" });
     const state = new SqliteStateStore(paths.stateFile);
     expect(state.getDiscoveryWatermark("claude-code")).not.toBeNull();
     expect(state.getDiscoveryWatermark("codex")).not.toBeNull();
     expect(state.getDiscoveryWatermark("grok-build")).not.toBeNull();
+    expect(state.getDiscoveryWatermark("cursor")).not.toBeNull();
     state.close();
 
     const second = await runtime.uploadSessions({});
@@ -445,17 +527,19 @@ describe("BrainHub runtime", () => {
       claude: baselineState.getDiscoveryWatermark("claude-code"),
       codex: baselineState.getDiscoveryWatermark("codex"),
       grok: baselineState.getDiscoveryWatermark("grok-build"),
+      cursor: baselineState.getDiscoveryWatermark("cursor"),
     };
     baselineState.close();
     await writeSourceFixtures(roots, { invalidGrokSummary: true });
 
     const result = await runtime.uploadSessions({});
 
-    expect(result).toMatchObject({ scanned: 2, uploaded: 2 });
+    expect(result).toMatchObject({ scanned: 3, uploaded: 3 });
     expect(result.adapters).toMatchObject({
       claude: { captured: 1, malformed: 1, errors: 0 },
       codex: { captured: 1, errors: 0 },
       grok: { captured: 0, errors: 1 },
+      cursor: { captured: 1, malformed: 1, errors: 0 },
     });
     const state = new SqliteStateStore(paths.stateFile);
     expect(state.getDiscoveryWatermark("claude-code")).not.toBe(
@@ -463,9 +547,72 @@ describe("BrainHub runtime", () => {
     );
     expect(state.getDiscoveryWatermark("codex")).not.toBe(baseline.codex);
     expect(state.getDiscoveryWatermark("grok-build")).toBe(baseline.grok);
+    expect(state.getDiscoveryWatermark("cursor")).not.toBe(baseline.cursor);
     state.close();
     runtime.close();
   });
+
+  it.each(["accepted", "declined"] as const)(
+    "does not silently backfill old Cursor history for a legacy %s decision",
+    async (decision) => {
+      const { runtime, config, paths, homeDir } = await runtimeFixture();
+      const roots = configureSourceRoots(homeDir, config);
+      const cursor = await writeCursorFixture(
+        roots.cursor,
+        `legacy-${decision}`,
+      );
+      const oldTime = new Date("2020-01-01T00:00:00.000Z");
+      await utimes(cursor, oldTime, oldTime);
+      const legacyState = new SqliteStateStore(paths.stateFile);
+      legacyState.recordBackfillDecision({
+        decision,
+        sessions: 3,
+        bytes: 1024,
+        decidedAt: "2026-07-28T02:00:00.000Z",
+      });
+      if (decision === "accepted") {
+        legacyState.recordBackfillUpload({
+          uploaded: 3,
+          pending: 0,
+          recordedAt: "2026-07-28T02:01:00.000Z",
+        });
+      }
+      for (const source of ["claude-code", "codex", "grok-build"] as const) {
+        legacyState.setDiscoveryWatermark(source, "2026-07-28T02:00:00.000Z");
+      }
+      legacyState.close();
+      const database = new Database(paths.stateFile);
+      database
+        .prepare("DELETE FROM discovery_watermarks WHERE source = 'cursor'")
+        .run();
+      database.close();
+      const drive = new MemoryDrive();
+      vi.spyOn(runtime, "drive").mockResolvedValue(drive);
+
+      const first = await runtime.uploadSessions({ sources: ["cursor"] });
+      expect(first).toMatchObject({ scanned: 0, uploaded: 0 });
+      const state = new SqliteStateStore(paths.stateFile);
+      const cursorWatermark = state.getDiscoveryWatermark("cursor")!;
+      state.close();
+      expect(cursorWatermark).toBeTruthy();
+
+      await writeFile(
+        cursor,
+        `${await readFile(cursor, "utf8")}\n{"role":"assistant","message":{"content":[{"type":"text","text":"New Cursor update"}]}}\n`,
+      );
+      const newTime = new Date(new Date(cursorWatermark).getTime() + 1_000);
+      await utimes(cursor, newTime, newTime);
+
+      const second = await runtime.uploadSessions({ sources: ["cursor"] });
+      expect(second).toMatchObject({ scanned: 1, uploaded: 1 });
+      expect(
+        (await drive.list({ prefix: "inbox/" })).some(
+          (entry) => entry.appProperties.source === "cursor",
+        ),
+      ).toBe(true);
+      runtime.close();
+    },
+  );
 
   it("retries a preprocessing failure even when its file is older than the watermark", async () => {
     const { runtime, config, paths, homeDir } = await runtimeFixture();

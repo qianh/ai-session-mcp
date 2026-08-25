@@ -119,8 +119,8 @@ describe.skipIf(!supportedPlatform)("MCP client installation", () => {
     );
     const expectedConfigArgs =
       process.platform === "darwin"
-        ? `<string>--config</string>\n    <string>${fixture.config}</string>\n    <string>upload</string>\n    <string>--sources</string>\n    <string>claude-code,codex,grok-build</string>`
-        : `--config ${fixture.config} upload --sources claude-code,codex,grok-build --json`;
+        ? `<string>--config</string>\n    <string>${fixture.config}</string>\n    <string>upload</string>\n    <string>--json</string>`
+        : `--config ${fixture.config} upload --json`;
     expect(scheduledCommand).toContain(expectedConfigArgs);
   }, 15_000);
 

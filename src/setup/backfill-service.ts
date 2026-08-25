@@ -3,6 +3,11 @@ import type {
   BackfillState,
   BackfillUploadInput,
 } from "../state/store.js";
+import {
+  LEGACY_BACKFILL_SOURCES,
+  SESSION_SOURCES,
+  type SessionSource,
+} from "../domain/session.js";
 
 export interface BackfillSummary {
   sessions: number;
@@ -25,7 +30,9 @@ export interface BackfillDependencies {
   state: BackfillStateStore;
   inspect(): Promise<BackfillSummary>;
   confirm(summary: BackfillSummary): Promise<boolean>;
-  upload(): Promise<{ uploaded: number; pending: number }>;
+  upload(
+    sources: SessionSource[],
+  ): Promise<{ uploaded: number; pending: number }>;
   report(summary: BackfillSummary): void;
   now?: () => string;
 }
@@ -60,6 +67,7 @@ export class BackfillService {
         decision: accepted ? "accepted" : "declined",
         ...summary,
         decidedAt: this.#now(),
+        sources: [...SESSION_SOURCES],
       });
       state = this.dependencies.state.getBackfillState();
       if (!state) throw new Error("Backfill decision was not persisted");
@@ -67,7 +75,9 @@ export class BackfillService {
 
     if (state.decision === "declined") return result(state);
 
-    const uploaded = await this.dependencies.upload();
+    const uploaded = await this.dependencies.upload(
+      state.sources ?? [...LEGACY_BACKFILL_SOURCES],
+    );
     this.dependencies.state.recordBackfillUpload({
       ...uploaded,
       recordedAt: this.#now(),

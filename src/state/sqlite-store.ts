@@ -13,6 +13,7 @@ import type {
   SessionState,
   StateStore,
 } from "./store.js";
+import { SessionSourceSchema, type SessionSource } from "../domain/session.js";
 
 interface SessionRow {
   conversation_key: string;
@@ -27,6 +28,27 @@ interface SessionRow {
   drive_file_id: string | null;
   uploaded_at: string | null;
   last_error_code: string | null;
+}
+
+interface BackfillRow {
+  decision: BackfillState["decision"];
+  sessions: number;
+  bytes: number;
+  uploaded: number;
+  decidedAt: string;
+  completedAt: string | null;
+  sources: string | null;
+}
+
+function parseBackfillSources(value: string | null): SessionSource[] | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map((source) => SessionSourceSchema.parse(source));
+  } catch {
+    return null;
+  }
 }
 
 function mapSession(row: SessionRow): SessionState {
@@ -97,9 +119,16 @@ export class SqliteStateStore implements StateStore {
         bytes INTEGER NOT NULL,
         uploaded INTEGER NOT NULL DEFAULT 0,
         decided_at TEXT NOT NULL,
-        completed_at TEXT
+        completed_at TEXT,
+        sources TEXT
       );
     `);
+    const backfillColumns = this.#database.pragma(
+      "table_info(setup_backfill)",
+    ) as Array<{ name: string }>;
+    if (!backfillColumns.some(({ name }) => name === "sources")) {
+      this.#database.exec("ALTER TABLE setup_backfill ADD COLUMN sources TEXT");
+    }
   }
 
   #migrateLegacy(legacyPath: string, currentPath: string): void {
@@ -344,12 +373,12 @@ export class SqliteStateStore implements StateStore {
       .prepare(
         `
           SELECT decision, sessions, bytes, uploaded,
-                 decided_at AS decidedAt, completed_at AS completedAt
+                 decided_at AS decidedAt, completed_at AS completedAt, sources
           FROM setup_backfill WHERE singleton = 1
         `,
       )
-      .get() as BackfillState | undefined;
-    return row ?? null;
+      .get() as BackfillRow | undefined;
+    return row ? { ...row, sources: parseBackfillSources(row.sources) } : null;
   }
 
   recordBackfillDecision(input: BackfillDecisionInput): void {
@@ -359,8 +388,8 @@ export class SqliteStateStore implements StateStore {
           `
             INSERT OR IGNORE INTO setup_backfill(
               singleton, decision, sessions, bytes, uploaded,
-              decided_at, completed_at
-            ) VALUES (1, ?, ?, ?, 0, ?, ?)
+              decided_at, completed_at, sources
+            ) VALUES (1, ?, ?, ?, 0, ?, ?, ?)
           `,
         )
         .run(
@@ -369,13 +398,19 @@ export class SqliteStateStore implements StateStore {
           input.bytes,
           input.decidedAt,
           input.decision === "declined" ? input.decidedAt : null,
+          input.sources ? JSON.stringify(input.sources) : null,
         );
       if (inserted.changes === 0 || input.decision !== "declined") return;
       const watermark = this.#database.prepare(`
         INSERT INTO discovery_watermarks(source, scanned_at) VALUES (?, ?)
         ON CONFLICT(source) DO UPDATE SET scanned_at = excluded.scanned_at
       `);
-      for (const source of ["claude-code", "codex", "grok-build"] as const) {
+      for (const source of [
+        "claude-code",
+        "codex",
+        "grok-build",
+        "cursor",
+      ] as const) {
         watermark.run(source, input.decidedAt);
       }
     })();

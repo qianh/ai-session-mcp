@@ -14,10 +14,20 @@ describe("session discovery", () => {
     const claude = join(root, "claude", "project", "session.jsonl");
     const codex = join(root, "codex", "2026", "07", "18", "rollout-test.jsonl");
     const grok = join(root, "grok", "workspace", "top-level");
+    const cursor = join(
+      root,
+      "cursor",
+      "workspace",
+      "agent-transcripts",
+      "cursor-1",
+      "cursor-1.jsonl",
+    );
+    const nestedCursor = join(dirname(cursor), "nested", "nested.jsonl");
     await Promise.all([
       mkdir(dirname(claude), { recursive: true }),
       mkdir(dirname(codex), { recursive: true }),
       mkdir(grok, { recursive: true }),
+      mkdir(dirname(nestedCursor), { recursive: true }),
     ]);
     await cp(join(fixtures, "claude", "top-level.jsonl"), claude);
     await cp(join(fixtures, "codex", "top-level.jsonl"), codex);
@@ -29,6 +39,10 @@ describe("session discovery", () => {
       join(fixtures, "grok", "top-level", "chat_history.jsonl"),
       join(grok, "chat_history.jsonl"),
     );
+    await Promise.all([
+      cp(join(fixtures, "cursor", "top-level.jsonl"), cursor),
+      cp(join(fixtures, "cursor", "top-level.jsonl"), nestedCursor),
+    ]);
     const grokShell = join(root, "grok", "workspace", "summary-only");
     await mkdir(grokShell, { recursive: true });
     await cp(
@@ -39,21 +53,24 @@ describe("session discovery", () => {
     const result = await discoverSessions({
       device: "test",
       includeSubagents: false,
-      sources: ["claude-code", "codex", "grok-build"],
+      sources: ["claude-code", "codex", "grok-build", "cursor"],
       paths: {
         claude: [join(root, "claude")],
         codex: [join(root, "codex")],
         grok: [join(root, "grok")],
+        cursor: [join(root, "cursor")],
       },
     });
 
     expect(result.sessions.map((session) => session.source).sort()).toEqual([
       "claude-code",
       "codex",
+      "cursor",
       "grok-build",
     ]);
-    expect(result.malformed).toBe(1);
+    expect(result.malformed).toBe(2);
     expect(result.status.codex.discovered).toBe(1);
+    expect(result.status.cursor).toMatchObject({ discovered: 1, captured: 1 });
     expect(result.status.grok.discovered).toBe(1);
     expect(result.status.grok.errors).toBe(0);
   });
@@ -87,7 +104,7 @@ describe("session discovery", () => {
       device: "test",
       includeSubagents: false,
       sources: ["codex"],
-      paths: { claude: [], codex: [root], grok: [] },
+      paths: { claude: [], codex: [root], grok: [], cursor: [] },
       modifiedAfter: { codex: "2026-07-18T00:00:00.000Z" },
       includePaths: [],
     });

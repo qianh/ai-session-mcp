@@ -24,7 +24,7 @@ describe("scheduler manager", () => {
     await mkdir(launchAgentDirectory, { recursive: true });
     await writeFile(
       join(launchAgentDirectory, "com.brainhub.upload.plist"),
-      "obsolete upload job",
+      "<string>upload</string>\n<string>--sources</string>\n<string>claude-code,codex,grok-build</string>",
     );
 
     await manager.install("02:00", "06:00");
@@ -43,7 +43,10 @@ describe("scheduler manager", () => {
       "com.brainhub.sync.plist",
     );
     await expect(readFile(uploadPath, "utf8")).resolves.toContain(
-      "<string>upload</string>\n    <string>--sources</string>\n    <string>claude-code,codex,grok-build</string>",
+      "<string>upload</string>\n    <string>--json</string>",
+    );
+    await expect(readFile(uploadPath, "utf8")).resolves.not.toContain(
+      "claude-code,codex,grok-build",
     );
     await expect(readFile(syncPath, "utf8")).resolves.toContain(
       "<string>sync</string>",

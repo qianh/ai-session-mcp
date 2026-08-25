@@ -54,10 +54,20 @@ describe("CLI dry run", () => {
       "rollout-test.jsonl",
     );
     const grok = join(home, "histories", "grok", "project", "session");
+    const cursor = join(
+      home,
+      "histories",
+      "cursor",
+      "workspace",
+      "agent-transcripts",
+      "cursor-1",
+      "cursor-1.jsonl",
+    );
     await Promise.all([
       mkdir(dirname(claude), { recursive: true }),
       mkdir(dirname(codex), { recursive: true }),
       mkdir(grok, { recursive: true }),
+      mkdir(dirname(cursor), { recursive: true }),
     ]);
     await cp(join(fixtures, "claude", "top-level.jsonl"), claude);
     await cp(join(fixtures, "codex", "top-level.jsonl"), codex);
@@ -69,6 +79,7 @@ describe("CLI dry run", () => {
       join(fixtures, "grok", "top-level", "chat_history.jsonl"),
       join(grok, "chat_history.jsonl"),
     );
+    await cp(join(fixtures, "cursor", "top-level.jsonl"), cursor);
     const config = join(home, "config.toml");
     await writeFile(
       config,
@@ -79,6 +90,7 @@ name = "e2e"
 claude_paths = [${JSON.stringify(dirname(dirname(claude)))}]
 codex_paths = [${JSON.stringify(join(home, "histories", "codex"))}]
 grok_paths = [${JSON.stringify(join(home, "histories", "grok"))}]
+cursor_paths = [${JSON.stringify(join(home, "histories", "cursor"))}]
 `,
     );
 
@@ -101,10 +113,10 @@ grok_paths = [${JSON.stringify(join(home, "histories", "grok"))}]
     const result = JSON.parse(stdout) as Record<string, unknown>;
     expect(result).toMatchObject({
       dryRun: true,
-      scanned: 3,
-      eligible: 3,
+      scanned: 4,
+      eligible: 4,
       uploaded: 0,
-      malformed: 1,
+      malformed: 2,
     });
     const statePath =
       process.platform === "darwin"
@@ -119,5 +131,55 @@ grok_paths = [${JSON.stringify(join(home, "histories", "grok"))}]
     await expect(
       import("node:fs/promises").then(({ access }) => access(statePath)),
     ).rejects.toThrow();
+  }, 15_000);
+
+  it("accepts Cursor as an explicitly scoped dry-run source", async () => {
+    const home = await mkdtemp(join(tmpdir(), "brainhub-cursor-e2e-"));
+    const cursorRoot = join(home, "cursor-projects");
+    const cursor = join(
+      cursorRoot,
+      "workspace",
+      "agent-transcripts",
+      "cursor-only",
+      "cursor-only.jsonl",
+    );
+    await mkdir(dirname(cursor), { recursive: true });
+    await cp(join(fixtures, "cursor", "top-level.jsonl"), cursor);
+    const config = join(home, "config.toml");
+    await writeFile(
+      config,
+      `version = 1
+[device]
+name = "cursor-e2e"
+[capture]
+cursor_paths = [${JSON.stringify(cursorRoot)}]
+`,
+    );
+
+    const { stdout } = await execute(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/cli/index.ts",
+        "upload",
+        "--sources",
+        "cursor",
+        "--backfill",
+        "--dry-run",
+        "--json",
+      ],
+      {
+        cwd: repository,
+        env: { ...process.env, HOME: home, BRAINHUB_CONFIG: config },
+      },
+    );
+    expect(JSON.parse(stdout)).toMatchObject({
+      dryRun: true,
+      scanned: 1,
+      eligible: 1,
+      uploaded: 0,
+      adapters: { cursor: { captured: 1, malformed: 1, errors: 0 } },
+    });
   }, 15_000);
 });

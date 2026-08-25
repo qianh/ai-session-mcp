@@ -24,6 +24,23 @@ setup 会先实时验证 Keychain 凭据和 Google Drive 账号身份，再复�
 
 没有配置 Obsidian 时只安装每日会话上传任务。发现或显式指定可写 vault 后，才额外安装每日画像同步任务。
 
+## 本地会话来源
+
+| 来源        | `source`      | 默认读取路径                                        | 环境变量                |
+| ----------- | ------------- | --------------------------------------------------- | ----------------------- |
+| Claude Code | `claude-code` | `~/.claude/projects/**/*.jsonl`                     | `BRAINHUB_CLAUDE_PATHS` |
+| Codex CLI   | `codex`       | `~/.codex/sessions/**/rollout-*.jsonl`              | `BRAINHUB_CODEX_PATHS`  |
+| Grok Build  | `grok-build`  | `~/.grok/sessions/**/chat_history.jsonl`            | `BRAINHUB_GROK_PATHS`   |
+| Cursor      | `cursor`      | `~/.cursor/projects/**/agent-transcripts/*/*.jsonl` | `BRAINHUB_CURSOR_PATHS` |
+
+路径环境变量使用当前平台的路径分隔符，可配置多个扫描根目录。Cursor 采集只读取精确的 agent transcript 层级，只把 user 记录中的 `<user_query>` 内容识别为用户输入，并排除动态工具、MCP 与 Hook 注入记录。它不读取 Cursor 的 `state.vscdb`、`conversation-search.db` 或 `agent-tools/`；会话 ID 取 transcript 文件名，时间范围取文件 birthtime/mtime。
+
+可用 `--sources` 限定一次上传，例如：
+
+```bash
+brainhub-mcp upload --sources cursor --backfill --dry-run --json
+```
+
 ## Google 账号
 
 授权页始终允许用户选择自己的 Google 账号。当前配置一次只绑定一个账号，切换命令为：
@@ -68,6 +85,8 @@ brainhub-mcp scheduler status --json
 brainhub-mcp scheduler install --at 02:00 --sync-at 06:00
 brainhub-mcp scheduler uninstall --json
 ```
+
+每日上传任务不固定来源参数，而是在执行时使用当前版本支持的默认来源。从旧版升级后需运行一次 `brainhub-mcp setup` 或 `brainhub-mcp scheduler install` 来覆盖旧的三来源 plist。回填决定会持久化确认时的来源集合；旧版未完成的 accepted 回填仍只重试原三来源，declined 决定也不会被重置。普通增量上传只从升级后的首次 Cursor 扫描开始，旧 Cursor 历史必须由用户显式执行 `brainhub-mcp upload --sources cursor --backfill`。
 
 ## 本地语义搜索
 

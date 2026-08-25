@@ -1,13 +1,13 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createMcpServer } from "../../src/mcp/server.js";
 
 describe("MCP protocol", () => {
   it("negotiates and publishes the five validated tools", async () => {
     const services = {
-      uploadSessions: async () => ({ dryRun: true, scanned: 0 }),
+      uploadSessions: vi.fn(async () => ({ dryRun: true, scanned: 0 })),
       searchSessions: async () => ({
         query: "test",
         indexStatus: "fresh",
@@ -15,11 +15,11 @@ describe("MCP protocol", () => {
         warnings: [],
       }),
       getPortrait: async () => ({ portrait: "profile" }),
-      getSession: async () => ({
-        source: "codex",
-        conversationId: "session-1",
+      getSession: vi.fn(async () => ({
+        source: "cursor",
+        conversationId: "cursor-1",
         content: "complete session",
-      }),
+      })),
       hubStatus: async () => ({ drive: { reachable: true } }),
     };
     const server = createMcpServer(services);
@@ -64,6 +64,23 @@ describe("MCP protocol", () => {
           }),
         ]),
       );
+      const upload = await client.callTool({
+        name: "upload_sessions",
+        arguments: { sources: ["cursor"], dry_run: true },
+      });
+      expect(upload.isError).not.toBe(true);
+      expect(services.uploadSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ sources: ["cursor"], dryRun: true }),
+      );
+      const cursorSession = await client.callTool({
+        name: "get_session",
+        arguments: { source: "cursor", conversation_id: "cursor-1" },
+      });
+      expect(cursorSession.isError).not.toBe(true);
+      expect(services.getSession).toHaveBeenCalledWith({
+        source: "cursor",
+        conversationId: "cursor-1",
+      });
     } finally {
       await client.close();
       await server.close();

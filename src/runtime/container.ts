@@ -13,7 +13,11 @@ import {
 } from "../auth/secret-store-factory.js";
 import type { BrainHubConfig, PlatformPaths } from "../domain/config.js";
 import { BrainHubError } from "../domain/errors.js";
-import { conversationKey, type SessionSource } from "../domain/session.js";
+import {
+  conversationKey,
+  SESSION_SOURCES,
+  type SessionSource,
+} from "../domain/session.js";
 import type { DrivePort } from "../drive/drive-port.js";
 import { GoogleDrive } from "../drive/google-drive.js";
 import { MemoryDrive } from "../drive/memory-drive.js";
@@ -65,10 +69,14 @@ class VolatileStateStore implements StateStore {
   setDiscoveryWatermark(): void {}
 }
 
-const adapterStatusKey: Record<SessionSource, "claude" | "codex" | "grok"> = {
+const adapterStatusKey: Record<
+  SessionSource,
+  "claude" | "codex" | "grok" | "cursor"
+> = {
   "claude-code": "claude",
   codex: "codex",
   "grok-build": "grok",
+  cursor: "cursor",
 };
 
 async function directorySize(path: string): Promise<number> {
@@ -183,11 +191,12 @@ export class BrainHubRuntime {
       device: this.config.device.name || hostname(),
       includeSubagents:
         input.includeSubagents ?? this.config.capture.includeSubagents,
-      sources: input.sources ?? ["claude-code", "codex", "grok-build"],
+      sources: input.sources ?? [...SESSION_SOURCES],
       paths: {
         claude: this.config.capture.claudePaths,
         codex: this.config.capture.codexPaths,
         grok: this.config.capture.grokPaths,
+        cursor: this.config.capture.cursorPaths,
       },
       ...(input.modifiedAfter ? { modifiedAfter: input.modifiedAfter } : {}),
       ...(input.includePaths ? { includePaths: input.includePaths } : {}),
@@ -202,7 +211,7 @@ export class BrainHubRuntime {
   }): Promise<UploadOutput & { adapters: object; pending: number }> {
     const dryRun = input.dryRun ?? false;
     const state: StateStore = dryRun ? new VolatileStateStore() : this.#state();
-    const sources = input.sources ?? ["claude-code", "codex", "grok-build"];
+    const sources = input.sources ?? [...SESSION_SOURCES];
     const scanStartedAt = new Date().toISOString();
     const backfill = input.backfill ?? false;
     const discovery = await this.discover({

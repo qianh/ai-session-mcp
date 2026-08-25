@@ -18,8 +18,9 @@ describe("scheduler templates", () => {
       "<string>/opt/brain hub/dist/cli/index.js</string>",
     );
     expect(plist).toContain(
-      "<string>upload</string>\n    <string>--sources</string>\n    <string>claude-code,codex,grok-build</string>\n    <string>--json</string>",
+      "<string>upload</string>\n    <string>--json</string>",
     );
+    expect(plist).not.toContain("<string>--sources</string>");
   });
 
   it("renders an independent daily portrait sync launch agent", () => {

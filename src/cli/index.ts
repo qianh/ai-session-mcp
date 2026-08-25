@@ -42,7 +42,7 @@ import {
   type LoadedConfig,
 } from "../domain/config-io.js";
 import { BrainHubError } from "../domain/errors.js";
-import type { SessionSource } from "../domain/session.js";
+import { SESSION_SOURCES, type SessionSource } from "../domain/session.js";
 import { serveMcp } from "../mcp/server.js";
 import { BrainHubRuntime } from "../runtime/container.js";
 import { SchedulerManager } from "../scheduler/manager.js";
@@ -85,11 +85,7 @@ export function isAffirmativeConfirmation(value: string): boolean {
 }
 
 function sourceList(value: string): SessionSource[] {
-  const allowed = new Set<SessionSource>([
-    "claude-code",
-    "codex",
-    "grok-build",
-  ]);
+  const allowed = new Set<SessionSource>(SESSION_SOURCES);
   const values = value.split(",").map((item) => item.trim()) as SessionSource[];
   if (values.some((item) => !allowed.has(item)))
     throw new Error("Unknown source in --sources");
@@ -246,10 +242,13 @@ export async function runCli(
             prompt.close();
           }
         },
-        upload: async () => {
+        upload: async (sources) => {
           const instance = await runtime();
           try {
-            const result = await instance.uploadSessions({ backfill: true });
+            const result = await instance.uploadSessions({
+              backfill: true,
+              sources,
+            });
             return { uploaded: result.uploaded, pending: result.pending };
           } finally {
             instance.close();

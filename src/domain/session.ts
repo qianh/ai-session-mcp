@@ -2,11 +2,20 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-export const SessionSourceSchema = z.enum([
+export const SESSION_SOURCES = [
   "claude-code",
   "codex",
   "grok-build",
-]);
+  "cursor",
+] as const;
+
+export const LEGACY_BACKFILL_SOURCES = [
+  "claude-code",
+  "codex",
+  "grok-build",
+] as const;
+
+export const SessionSourceSchema = z.enum(SESSION_SOURCES);
 
 export type SessionSource = z.infer<typeof SessionSourceSchema>;
 
