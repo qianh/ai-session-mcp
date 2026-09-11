@@ -26,6 +26,7 @@ export const ConfigSchema = z
       internalCidrs: z.array(z.string().min(1)),
     }),
     publish: z.object({ fallbackPath: z.string() }),
+    portrait: z.object({ directory: z.string(), fileName: z.string().min(1) }),
     upload: z.object({
       batchSize: z.int().positive().max(10_000),
       concurrency: z.int().positive().max(32),
@@ -148,6 +149,7 @@ export function createDefaultConfig(options: {
       internalCidrs: [],
     },
     publish: { fallbackPath: "" },
+    portrait: { directory: "", fileName: "Digital_Twin_Profile.md" },
     upload: { batchSize: 100, concurrency: 4 },
     search: {
       model: "Xenova/multilingual-e5-small",

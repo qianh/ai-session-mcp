@@ -34,4 +34,17 @@ describe("portrait reading", () => {
       retryable: false,
     });
   });
+
+  it("reads a configured Drive directory and file", async () => {
+    const drive = new MemoryDrive();
+    await drive.put({
+      path: "profiles/custom.md",
+      bytes: Buffer.from("custom"),
+      mimeType: "text/markdown",
+    });
+    const service = new PortraitService({ drive, path: "profiles/custom.md" });
+    await expect(service.getPortrait()).resolves.toEqual({
+      portrait: "custom",
+    });
+  });
 });

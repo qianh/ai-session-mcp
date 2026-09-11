@@ -13,6 +13,7 @@ describe("setup service", () => {
       completed: true,
     }));
     const registerClient = vi.fn(async () => undefined);
+    const installClientSkills = vi.fn(async () => undefined);
     const installScheduler = vi.fn(async () => undefined);
     const service = new SetupService({
       platform: "darwin",
@@ -27,8 +28,10 @@ describe("setup service", () => {
         claude: { available: true, registered: false },
         codex: { available: true, registered: true },
         grok: { available: false, registered: false },
+        cursor: { available: true, registered: false },
       }),
       registerClient,
+      installClientSkills,
       installScheduler,
       inspectObsidian: async () => ({ configured: false }),
       report,
@@ -37,7 +40,8 @@ describe("setup service", () => {
     const result = await service.run();
 
     expect(runBackfill).toHaveBeenCalledOnce();
-    expect(registerClient).toHaveBeenCalledExactlyOnceWith("claude");
+    expect(registerClient.mock.calls).toEqual([["claude"], ["cursor"]]);
+    expect(installClientSkills).toHaveBeenCalledExactlyOnceWith("codex");
     expect(installScheduler).toHaveBeenCalledExactlyOnceWith({
       portrait: false,
     });
@@ -53,7 +57,7 @@ describe("setup service", () => {
         completed: true,
       },
       model: { ready: false },
-      clients: { registered: ["claude"] },
+      clients: { registered: ["claude", "cursor"] },
       scheduler: { installed: true },
       obsidian: { configured: false },
     });
@@ -80,8 +84,10 @@ describe("setup service", () => {
         claude: { available: false, registered: false },
         codex: { available: false, registered: false },
         grok: { available: false, registered: false },
+        cursor: { available: false, registered: false },
       }),
       registerClient: async () => undefined,
+      installClientSkills: async () => undefined,
       installScheduler,
       inspectObsidian: async () => ({
         configured: true,
@@ -114,8 +120,10 @@ describe("setup service", () => {
         claude: { available: false, registered: false },
         codex: { available: false, registered: false },
         grok: { available: false, registered: false },
+        cursor: { available: false, registered: false },
       }),
       registerClient: async () => undefined,
+      installClientSkills: async () => undefined,
       installScheduler: async () => undefined,
       inspectObsidian: async () => ({ configured: false }),
       report: () => undefined,
@@ -148,8 +156,10 @@ describe("setup service", () => {
         claude: { available: false, registered: false },
         codex: { available: false, registered: false },
         grok: { available: false, registered: false },
+        cursor: { available: false, registered: false },
       }),
       registerClient: async () => undefined,
+      installClientSkills: async () => undefined,
       installScheduler: async () => undefined,
       inspectObsidian: async () => ({ configured: false }),
       report: () => undefined,

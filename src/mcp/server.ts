@@ -141,7 +141,7 @@ export function createToolHandlers(services: RuntimeServices) {
 }
 
 export function createMcpServer(services: RuntimeServices): McpServer {
-  const server = new McpServer({ name: "brainhub-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "brainhub-mcp", version: "0.4.0" });
   const handlers = createToolHandlers(services);
   const source = SessionSourceSchema;
 
@@ -175,7 +175,7 @@ export function createMcpServer(services: RuntimeServices): McpServer {
   server.registerTool(
     "get_portrait",
     {
-      description: "读取 My Drive 根目录下完整的 Digital_Twin_Profile.md",
+      description: "读取配置的 Google Drive 目录和文件中的完整画像",
       inputSchema: {},
     },
     handlers.get_portrait,

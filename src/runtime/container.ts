@@ -21,10 +21,7 @@ import {
 import type { DrivePort } from "../drive/drive-port.js";
 import { GoogleDrive } from "../drive/google-drive.js";
 import { MemoryDrive } from "../drive/memory-drive.js";
-import {
-  DIGITAL_TWIN_PROFILE_PATH,
-  PortraitService,
-} from "../portrait/portrait-service.js";
+import { PortraitService } from "../portrait/portrait-service.js";
 import { PortraitSyncService } from "../portrait/portrait-sync-service.js";
 import { SchedulerManager } from "../scheduler/manager.js";
 import { E5Embedder } from "../search/e5-embedder.js";
@@ -361,10 +358,22 @@ export class BrainHubRuntime {
     };
   }
 
+  #portraitPath(): string {
+    const { directory, fileName } = this.config.portrait;
+    return directory
+      ? `${directory.replace(/\/+$/, "")}/${fileName}`
+      : fileName;
+  }
+
   async portraitService(): Promise<PortraitService> {
     return new PortraitService({
       drive: await this.#myDrive(),
-      path: DIGITAL_TWIN_PROFILE_PATH,
+      path: this.#portraitPath(),
+      outputPath: join(
+        dirname(this.configFile),
+        "portrait",
+        this.config.portrait.fileName,
+      ),
     });
   }
 
@@ -372,7 +381,7 @@ export class BrainHubRuntime {
     return new PortraitSyncService({
       portraitSource: {
         drive: await this.#myDrive(),
-        path: DIGITAL_TWIN_PROFILE_PATH,
+        path: this.#portraitPath(),
       },
       publish: {
         platform: this.platform,
@@ -432,7 +441,7 @@ export class BrainHubRuntime {
       portrait: async () => {
         const portrait = await (
           await this.#myDrive()
-        ).readPath(DIGITAL_TWIN_PROFILE_PATH);
+        ).readPath(this.#portraitPath());
         return portrait
           ? { available: true, modifiedAt: portrait.modifiedTime }
           : { available: false };

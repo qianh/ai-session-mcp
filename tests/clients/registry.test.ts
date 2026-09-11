@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  ClientRegistry,
   clientMutation,
   launchWithConfig,
   mergeClaudeDesktopConfig,
@@ -85,5 +86,77 @@ describe("MCP client registration", () => {
     ).rejects.toThrow();
 
     await expect(readFile(path, "utf8")).resolves.toBe(malformed);
+  });
+});
+
+describe("Cursor registration", () => {
+  it("selects available clients for --all installation and registered clients for removal", async () => {
+    const home = await mkdtemp(join(tmpdir(), "brainhub-cursor-"));
+    await mkdir(join(home, ".cursor"));
+    const registry = new ClientRegistry(
+      { command: "node", args: [] },
+      async () => {
+        throw new Error("CLI not installed");
+      },
+      home,
+    );
+    await expect(registry.targets("install")).resolves.toEqual(["cursor"]);
+    await expect(registry.targets("uninstall")).resolves.toEqual([]);
+    await registry.mutate("cursor", "install");
+    await expect(registry.targets("uninstall")).resolves.toEqual(["cursor"]);
+  });
+
+  it("merges and removes only BrainHub using the global MCP config without a CLI", async () => {
+    const home = await mkdtemp(join(tmpdir(), "brainhub-cursor-"));
+    const path = join(home, ".cursor", "mcp.json");
+    await mkdir(join(home, ".cursor"));
+    const original = {
+      mcpServers: { other: { command: "other" } },
+      custom: true,
+    };
+    await writeFile(path, JSON.stringify(original));
+    const run = vi.fn(async () => {
+      throw new Error("CLI not installed");
+    });
+    const registry = new ClientRegistry(
+      { command: "node", args: ["brainhub.js"] },
+      run,
+      home,
+    );
+    await expect(registry.status("cursor")).resolves.toEqual({
+      available: true,
+      registered: false,
+    });
+    await registry.mutate("cursor", "install");
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      ...original,
+      mcpServers: {
+        ...original.mcpServers,
+        "brain-hub": { command: "node", args: ["brainhub.js", "serve"] },
+      },
+    });
+    await expect(registry.status("cursor")).resolves.toEqual({
+      available: true,
+      registered: true,
+    });
+    await registry.mutate("cursor", "uninstall");
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(original);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("does not replace malformed Cursor configuration", async () => {
+    const home = await mkdtemp(join(tmpdir(), "brainhub-cursor-"));
+    const path = join(home, ".cursor", "mcp.json");
+    await mkdir(join(home, ".cursor"));
+    await writeFile(path, '{"mcpServers": []}');
+    const registry = new ClientRegistry(
+      { command: "node", args: [] },
+      vi.fn(),
+      home,
+    );
+    await expect(registry.mutate("cursor", "install")).rejects.toThrow(
+      "mcpServers must be a JSON object",
+    );
+    expect(await readFile(path, "utf8")).toBe('{"mcpServers": []}');
   });
 });

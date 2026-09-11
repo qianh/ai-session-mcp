@@ -20,7 +20,8 @@ brainhub-mcp setup
 3. 下载固定版本的 `Xenova/multilingual-e5-small`，并显示进度。
 4. 统计本机可回填会话的数量与字节数；默认确认后上传历史会话。
 5. 自动注册已安装的 MCP 客户端，并安装每日上传 launchd 任务。
-6. 如显式指定 Obsidian vault，安装独立的每日画像覆盖任务。
+6. 为已检测到的 Codex、Grok Build、Claude Code 和 Cursor 安装 BrainHub 的 5 个独立 Skill；用户只需安装一次 BrainHub。
+7. 如显式指定 Obsidian vault，安装独立的每日画像覆盖任务。
 
 流程可以重复运行。`setup` 会实时验证已有 Google 凭据与账号身份，并复用已完成的账号绑定、回填决定、客户端注册和 launchd 配置；未完成且仍有待重试项的回填会继续执行，不会再次询问。
 
@@ -38,8 +39,27 @@ brainhub-mcp setup
 - `upload_sessions`：上传新增或变化的本地 AI 编程会话到 `brain-hub/inbox/<device>/`。
 - `search_sessions`：刷新本地 inbox 索引并执行语义与关键词混合搜索。
 - `get_session`：使用 `{source, conversation_id}` 返回 Drive 中的完整 inbox 会话。
-- `get_portrait`：只读并完整返回 My Drive 根目录的 `Digital_Twin_Profile.md`。
+- `get_portrait`：只读并完整返回配置的 Google Drive 目录和文件。
+
+画像来源可在配置文件中设置：`portrait.directory`（相对 My Drive 根目录的目录，可为空）和 `portrait.fileName`（文件名）。默认值仍为根目录下的 `Digital_Twin_Profile.md`。
+
 - `hub_status`：返回账号、root、上传、模型、索引、launchd、画像、Obsidian 和 npm 版本状态。
+
+## Skill 调用
+
+安装并完成 `setup` 后，BrainHub 会随 MCP 一起安装 5 个独立 Skill：
+
+```text
+get_portrait
+search_sessions
+get_session
+upload_sessions
+hub_status
+```
+
+这些是普通 Skill，名称分别为 `brainhub-get-portrait`、`brainhub-search-sessions`、`brainhub-get-session`、`brainhub-upload-sessions`、`brainhub-hub-status`。在客户端的 Skill 选择界面中按名称调用；Codex 示例：`$brainhub-get-portrait`。Skill 只负责路由到对应 MCP 方法，参数仍遵循 MCP 工具定义。
+
+重新运行 `setup` 会为已注册 MCP 的可用客户端补装 Skill。安装保留已有同名目录；卸载只删除本安装器创建且内容未改动的 Skill 文件，保留用户自定义文件和旧的 `brainHub` 目录。
 
 `get_portrait` 不写 Obsidian。只有每日 `portrait sync` 任务会原子覆盖 `<vault>/BrainHub/portrait.md`；它不生成历史版本，也不读取周报。
 

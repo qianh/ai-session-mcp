@@ -29,6 +29,7 @@ describe("complete uninstall", () => {
 
   it("removes integrations, authorization, Keychain, and local state", async () => {
     const unregisterClient = vi.fn(async () => undefined);
+    const uninstallClientSkills = vi.fn(async () => undefined);
     const uninstallScheduler = vi.fn(async () => undefined);
     const revokeGoogle = vi.fn(async () => true);
     const clearKeychain = vi.fn(async () => undefined);
@@ -39,22 +40,29 @@ describe("complete uninstall", () => {
         claude: { available: true, registered: true },
         codex: { available: true, registered: false },
         grok: { available: true, registered: true },
+        cursor: { available: true, registered: true },
       }),
       unregisterClient,
+      uninstallClientSkills,
       uninstallScheduler,
       revokeGoogle,
       clearKeychain,
       removeLocalState,
     }).run();
 
-    expect(unregisterClient.mock.calls).toEqual([["claude"], ["grok"]]);
+    expect(unregisterClient.mock.calls).toEqual([
+      ["claude"],
+      ["grok"],
+      ["cursor"],
+    ]);
+    expect(uninstallClientSkills).toHaveBeenCalledExactlyOnceWith("codex");
     expect(uninstallScheduler).toHaveBeenCalledOnce();
     expect(revokeGoogle).toHaveBeenCalledOnce();
     expect(clearKeychain).toHaveBeenCalledOnce();
     expect(removeLocalState).toHaveBeenCalledOnce();
     expect(result).toEqual({
       uninstalled: true,
-      clients: ["claude", "grok"],
+      clients: ["claude", "grok", "cursor"],
       oauthRevoked: true,
       warnings: [],
     });
@@ -69,8 +77,10 @@ describe("complete uninstall", () => {
         claude: { available: false, registered: false },
         codex: { available: false, registered: false },
         grok: { available: false, registered: false },
+        cursor: { available: false, registered: false },
       }),
       unregisterClient: async () => undefined,
+      uninstallClientSkills: async () => undefined,
       uninstallScheduler: async () => {
         throw new Error("launchctl unavailable");
       },

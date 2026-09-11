@@ -78,7 +78,7 @@ MCP 不创建、读取或迁移 `sessions/`，也不因组件升级移动、改�
 <vault>/BrainHub/portrait.md
 ```
 
-画像源固定为 My Drive 根目录的 `Digital_Twin_Profile.md`。任务失败会保留旧文件并在下次重试；不保存历史版本，不读取或生成周报。
+画像源由 `portrait.directory` 和 `portrait.fileName` 配置，目录相对于 My Drive 根目录；目录为空时读取根目录文件。默认是 `Digital_Twin_Profile.md`。任务失败会保留旧文件并在下次重试；不保存历史版本，不读取或生成周报。
 
 ```bash
 brainhub-mcp scheduler status --json

@@ -178,71 +178,115 @@ describe("BrainHub runtime", () => {
     runtime.close();
   });
 
-  it("reads the portrait from the Digital Twin file in My Drive", async () => {
-    const profile = {
-      id: "profile-1",
-      name: "Digital_Twin_Profile.md",
-      mimeType: "text/markdown",
-      parents: ["my-drive-root"],
-      size: "15",
-      modifiedTime: "2026-07-25T00:00:00.000Z",
-      appProperties: {},
-      version: "1",
-      trashed: false,
-    };
-    const client = {
-      files: {
-        list: async (request: { q?: string }) => ({
-          data: {
-            files: request.q?.includes("'my-drive-root' in parents")
-              ? [profile]
-              : [],
+  it.each([
+    { directory: "", fileName: "Digital_Twin_Profile.md", legacy: false },
+    { directory: "", fileName: "Custom_Profile.md", legacy: false },
+    { directory: "Profiles///", fileName: "Custom_Profile.md", legacy: false },
+    { directory: "Profiles", fileName: "Custom_Profile.md", legacy: true },
+  ])(
+    "reads and reports the configured portrait: $directory/$fileName (legacy: $legacy)",
+    async ({ directory, fileName, legacy }) => {
+      const profile = {
+        id: "profile-1",
+        name: fileName,
+        mimeType: "text/markdown",
+        parents: [directory ? "profiles-folder" : "my-drive-root"],
+        size: "15",
+        modifiedTime: "2026-07-25T00:00:00.000Z",
+        appProperties: {},
+        version: "1",
+        trashed: false,
+      };
+      const files = [
+        profile,
+        ...(directory
+          ? [
+              {
+                ...profile,
+                id: "profiles-folder",
+                name: "Profiles",
+                mimeType: "application/vnd.google-apps.folder",
+                parents: ["my-drive-root"],
+              },
+            ]
+          : []),
+        ...(legacy
+          ? [
+              {
+                ...profile,
+                id: "legacy-profile",
+                name: "Digital_Twin_Profile.md",
+                parents: ["my-drive-root"],
+                modifiedTime: "2025-01-01T00:00:00.000Z",
+              },
+            ]
+          : []),
+      ];
+      const client = {
+        files: {
+          list: async (request: { q?: string }) => ({
+            data: {
+              files: files.filter(
+                (file) =>
+                  request.q?.includes(`'${file.parents[0]}' in parents`) &&
+                  (!request.q.includes("name =") ||
+                    request.q.includes(`name = '${file.name}'`)),
+              ),
+            },
+          }),
+          get: async (request: { fileId?: string; alt?: string }) => {
+            if (request.fileId === "root") {
+              return { data: { id: "my-drive-root" } };
+            }
+            if (request.alt === "media") {
+              return { data: Buffer.from("# Runtime Digital Twin\n") };
+            }
+            return {
+              data: files.find((file) => file.id === request.fileId),
+              headers: { etag: "profile-etag" },
+            };
+          },
+        },
+      };
+      const fixture = await runtimeFixture({
+        secretStoreFactory: () => ({
+          get: async () =>
+            JSON.stringify({
+              access_token: "access-token",
+              refresh_token: "refresh-token",
+              expiry_date: Date.now() + 60 * 60_000,
+            }),
+          set: async () => undefined,
+          delete: async () => undefined,
+        }),
+        driveFactory: () => client,
+      });
+      const oauthClientFile = join(fixture.homeDir, "oauth.json");
+      await writeFile(
+        oauthClientFile,
+        JSON.stringify({
+          installed: {
+            client_id: "client-id",
+            client_secret: "client-secret",
+            redirect_uris: ["http://127.0.0.1"],
           },
         }),
-        get: async (request: { fileId?: string; alt?: string }) => {
-          if (request.fileId === "root") {
-            return { data: { id: "my-drive-root" } };
-          }
-          if (request.alt === "media") {
-            return { data: Buffer.from("# Runtime Digital Twin\n") };
-          }
-          return { data: profile, headers: { etag: "profile-etag" } };
-        },
-      },
-    };
-    const fixture = await runtimeFixture({
-      secretStoreFactory: () => ({
-        get: async () =>
-          JSON.stringify({
-            access_token: "access-token",
-            refresh_token: "refresh-token",
-            expiry_date: Date.now() + 60 * 60_000,
-          }),
-        set: async () => undefined,
-        delete: async () => undefined,
-      }),
-      driveFactory: () => client,
-    });
-    const oauthClientFile = join(fixture.homeDir, "oauth.json");
-    await writeFile(
-      oauthClientFile,
-      JSON.stringify({
-        installed: {
-          client_id: "client-id",
-          client_secret: "client-secret",
-          redirect_uris: ["http://127.0.0.1"],
-        },
-      }),
-    );
-    fixture.config.drive.rootFolderId = "brain-hub-root";
-    fixture.config.drive.oauthClientFile = oauthClientFile;
-    fixture.config.publish.fallbackPath = join(fixture.homeDir, "publish");
+      );
+      fixture.config.drive.rootFolderId = "brain-hub-root";
+      fixture.config.drive.oauthClientFile = oauthClientFile;
+      fixture.config.portrait = { directory, fileName };
+      fixture.config.publish.fallbackPath = join(fixture.homeDir, "publish");
 
-    const result = await fixture.runtime.getPortrait();
+      const result = await fixture.runtime.getPortrait();
 
-    expect(result.portrait).toBe("# Runtime Digital Twin\n");
-    fixture.runtime.close();
-  });
+      expect(result.portrait).toBe("# Runtime Digital Twin\n");
+      expect((await fixture.runtime.hubStatus()).portrait).toEqual({
+        available: true,
+        modifiedAt: profile.modifiedTime,
+      });
+      fixture.runtime.close();
+    },
+  );
 
   it("does not couple a successful upload to search indexing", async () => {
     const { runtime, config } = await runtimeFixture();

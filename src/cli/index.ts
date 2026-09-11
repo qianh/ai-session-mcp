@@ -31,6 +31,7 @@ import {
 } from "../auth/secret-store-factory.js";
 import type { SecretStore } from "../auth/secret-store.js";
 import {
+  CLIENT_NAMES,
   ClientRegistry,
   launchWithConfig,
   mergeClaudeDesktopConfig,
@@ -371,7 +372,7 @@ export async function runCli(
             );
             return Object.fromEntries(
               await Promise.all(
-                (["claude", "codex", "grok"] as const).map(async (client) => [
+                CLIENT_NAMES.map(async (client) => [
                   client,
                   await registry.status(client),
                 ]),
@@ -386,6 +387,9 @@ export async function runCli(
             await new ClientRegistry(
               launchWithConfig(launch, loaded.configFile),
             ).mutate(client, "install");
+          },
+          installClientSkills: async (client) => {
+            await new ClientRegistry(launch).installSkills(client);
           },
           installScheduler: async ({ portrait }) => {
             const loaded = await load();
@@ -754,6 +758,33 @@ export async function runCli(
 
   const portrait = program.command("portrait");
   portrait
+    .command("set")
+    .description("configure the Google Drive portrait source")
+    .requiredOption(
+      "--directory <directory>",
+      "directory relative to My Drive root (use empty string for root)",
+    )
+    .requiredOption("--file <fileName>", "portrait file name")
+    .option("--json")
+    .action(
+      async (options: { directory: string; file: string; json?: boolean }) => {
+        const loaded = await load();
+        const nextConfig = {
+          ...loaded.config,
+          portrait: { directory: options.directory, fileName: options.file },
+        };
+        await persistConfig(loaded.configFile, nextConfig);
+        print(
+          {
+            configured: true,
+            file: loaded.configFile,
+            portrait: nextConfig.portrait,
+          },
+          options.json,
+        );
+      },
+    );
+  portrait
     .command("get")
     .option("--json")
     .action(async (options: { json?: boolean }) => {
@@ -811,11 +842,12 @@ export async function runCli(
       ) => {
         const registry = new ClientRegistry(launch);
         const targets: ClientName[] = options.all
-          ? ["claude", "codex", "grok"]
+          ? await registry.targets(action)
           : client
             ? [client]
             : [];
-        if (targets.length === 0) throw new Error("Specify a client or --all");
+        if (!options.all && targets.length === 0)
+          throw new Error("Specify a client or --all");
         for (const target of targets) await registry.mutate(target, action);
         if (action === "install" && options.desktop) {
           const desktopPath =
@@ -874,10 +906,7 @@ export async function runCli(
       const registry = new ClientRegistry(launch);
       const result = Object.fromEntries(
         await Promise.all(
-          (["claude", "codex", "grok"] as const).map(async (name) => [
-            name,
-            await registry.status(name),
-          ]),
+          CLIENT_NAMES.map(async (name) => [name, await registry.status(name)]),
         ),
       );
       print(result, options.json);
@@ -974,13 +1003,14 @@ export async function runCli(
         inspectClients: async () =>
           Object.fromEntries(
             await Promise.all(
-              (["claude", "codex", "grok"] as const).map(async (client) => [
+              CLIENT_NAMES.map(async (client) => [
                 client,
                 await registry.status(client),
               ]),
             ),
           ) as Record<ClientName, { available: boolean; registered: boolean }>,
         unregisterClient: (client) => registry.mutate(client, "uninstall"),
+        uninstallClientSkills: (client) => registry.uninstallSkills(client),
         uninstallScheduler: () => scheduler.uninstall(),
         revokeGoogle: () =>
           credential

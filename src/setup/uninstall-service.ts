@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 
-import type { ClientName } from "../clients/registry.js";
+import { CLIENT_NAMES, type ClientName } from "../clients/registry.js";
 import { BrainHubError } from "../domain/errors.js";
 
 type ClientStatuses = Record<
@@ -12,6 +12,7 @@ interface UninstallDependencies {
   platform: NodeJS.Platform;
   inspectClients(): Promise<ClientStatuses>;
   unregisterClient(client: ClientName): Promise<void>;
+  uninstallClientSkills(client: ClientName): Promise<void>;
   uninstallScheduler(): Promise<void>;
   revokeGoogle(): Promise<boolean>;
   clearKeychain(): Promise<void>;
@@ -57,8 +58,18 @@ export class UninstallService {
     const removedClients: ClientName[] = [];
     try {
       const statuses = await this.dependencies.inspectClients();
-      for (const client of ["claude", "codex", "grok"] as const) {
-        if (!statuses[client].registered) continue;
+      for (const client of CLIENT_NAMES) {
+        if (!statuses[client].registered) {
+          try {
+            await this.dependencies.uninstallClientSkills(client);
+          } catch (error) {
+            warnings.push({
+              code: "CLIENT_SKILLS_UNINSTALL_FAILED",
+              message: `${client}: ${message(error)}`,
+            });
+          }
+          continue;
+        }
         try {
           await this.dependencies.unregisterClient(client);
           removedClients.push(client);

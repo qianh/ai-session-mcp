@@ -1,5 +1,5 @@
 import { BrainHubError } from "../domain/errors.js";
-import type { ClientName } from "../clients/registry.js";
+import { CLIENT_NAMES, type ClientName } from "../clients/registry.js";
 import type { BackfillResult } from "./backfill-service.js";
 
 export type { BackfillSummary } from "./backfill-service.js";
@@ -27,6 +27,7 @@ export interface SetupDependencies {
   runBackfill(): Promise<BackfillResult>;
   inspectClients(): Promise<ClientStatuses>;
   registerClient(client: ClientName): Promise<void>;
+  installClientSkills(client: ClientName): Promise<void>;
   installScheduler(options: { portrait: boolean }): Promise<void>;
   inspectObsidian(): Promise<{ configured: boolean; path?: string }>;
   report(progress: SetupProgress): void;
@@ -84,10 +85,22 @@ export class SetupService {
     const statuses = await this.dependencies.inspectClients();
     const registered: ClientName[] = [];
     const skipped: ClientName[] = [];
-    for (const client of ["claude", "codex", "grok"] as const) {
+    for (const client of CLIENT_NAMES) {
       const status = statuses[client];
-      if (!status.available || status.registered) {
+      if (!status.available) {
         skipped.push(client);
+        continue;
+      }
+      if (status.registered) {
+        skipped.push(client);
+        try {
+          await this.dependencies.installClientSkills(client);
+        } catch (error) {
+          warnings.push({
+            code: "CLIENT_SKILLS_INSTALL_FAILED",
+            message: `${client}: ${message(error)}`,
+          });
+        }
         continue;
       }
       try {
