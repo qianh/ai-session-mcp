@@ -10,10 +10,12 @@ BrainHub MCP 是一个仅在本机运行的 macOS MCP 服务。它读取 Claude 
 
 ```bash
 npm install -g brainhub-mcp
-brainhub-mcp setup
+brainhub-mcp
 ```
 
-`setup` 会依次完成：
+npm 安装或升级会自动为检测到的客户端安装 Skill，并注册尚未注册的 MCP；已有 MCP 启动配置会保留。Skill 安装无需单独执行 `setup`。
+
+首次运行 `brainhub-mcp` 会直接进入配置引导（也可显式运行 `brainhub-mcp setup`），依次完成：
 
 1. 打开浏览器，让用户选择自己的 Google 账号并授权 Google Drive。
 2. 创建或绑定该账号 My Drive 根目录下的 `brain-hub/`。若存在多个同名目录，流程会停止并要求用户明确选择。
@@ -47,7 +49,7 @@ brainhub-mcp setup
 
 ## Skill 调用
 
-安装并完成 `setup` 后，BrainHub 会随 MCP 一起安装 5 个独立 Skill：
+npm 安装时，BrainHub 会为检测到的客户端安装对应以下 5 个 MCP 方法的独立 Skill：
 
 ```text
 get_portrait
@@ -59,7 +61,7 @@ hub_status
 
 这些是普通 Skill，名称分别为 `brainhub-get-portrait`、`brainhub-search-sessions`、`brainhub-get-session`、`brainhub-upload-sessions`、`brainhub-hub-status`。在客户端的 Skill 选择界面中按名称调用；Codex 示例：`$brainhub-get-portrait`。Skill 只负责路由到对应 MCP 方法，参数仍遵循 MCP 工具定义。
 
-重新运行 `setup` 会为已注册 MCP 的可用客户端补装 Skill。安装保留已有同名目录；卸载只删除本安装器创建且内容未改动的 Skill 文件，保留用户自定义文件和旧的 `brainHub` 目录。
+npm 升级会自动补装 Skill；MCP 服务启动时也会为已有客户端目录补装，覆盖安装脚本被禁用或之后新增客户端的情况。已打开的客户端可能需要重启或刷新 Skill 列表。安装保留已有同名目录；卸载只删除本安装器创建且内容未改动的 Skill 文件，保留用户自定义文件和旧的 `brainHub` 目录。
 
 `get_portrait` 不写 Obsidian。只有每日 `portrait sync` 任务会原子覆盖 `<vault>/BrainHub/portrait.md`；它不生成历史版本，也不读取周报。
 

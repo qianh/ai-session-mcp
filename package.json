@@ -1,6 +1,6 @@
 {
   "name": "brainhub-mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "Apache-2.0",
   "description": "Local-first BrainHub MCP server for personal Google Drive sessions",
   "keywords": [
@@ -20,6 +20,7 @@
   "files": [
     "dist",
     "plugins",
+    "scripts/postinstall.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -46,7 +47,8 @@
     "format:check": "prettier --check .",
     "pack:check": "npm pack --dry-run --ignore-scripts",
     "verify": "pnpm test && pnpm typecheck && pnpm lint && pnpm format:check && pnpm build && pnpm pack:check",
-    "prepublishOnly": "pnpm verify && pnpm build:release"
+    "prepublishOnly": "pnpm verify && pnpm build:release",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

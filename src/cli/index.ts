@@ -30,6 +30,7 @@ import {
   type ConfigSecretStoreFactory,
 } from "../auth/secret-store-factory.js";
 import type { SecretStore } from "../auth/secret-store.js";
+import { installLocalIntegrations } from "../clients/auto-install.js";
 import {
   CLIENT_NAMES,
   ClientRegistry,
@@ -271,7 +272,7 @@ export async function runCli(
     });
 
   program
-    .command("setup")
+    .command("setup", { isDefault: true })
     .description("configure BrainHub MCP on macOS")
     .option("--yes", "accept the default session backfill")
     .option("--drive-root-id <id>", "choose an existing brain-hub folder")
@@ -437,6 +438,14 @@ export async function runCli(
     .command("serve")
     .description("run the stdio MCP server")
     .action(async () => {
+      const { warnings } = await installLocalIntegrations({
+        launch,
+        homeDir: homedir(),
+        skillsOnly: true,
+      });
+      for (const warning of warnings) {
+        process.stderr.write(`BrainHub: ${warning}\n`);
+      }
       const instance = await runtime();
       await serveMcp(instance);
     });

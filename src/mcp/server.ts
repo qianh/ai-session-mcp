@@ -141,7 +141,7 @@ export function createToolHandlers(services: RuntimeServices) {
 }
 
 export function createMcpServer(services: RuntimeServices): McpServer {
-  const server = new McpServer({ name: "brainhub-mcp", version: "0.4.0" });
+  const server = new McpServer({ name: "brainhub-mcp", version: "0.4.1" });
   const handlers = createToolHandlers(services);
   const source = SessionSourceSchema;
 
