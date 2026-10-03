@@ -1,6 +1,6 @@
 {
   "name": "brainhub-mcp",
-  "version": "0.4.1",
+  "version": "0.6.0",
   "license": "Apache-2.0",
   "description": "Local-first BrainHub MCP server for personal Google Drive sessions",
   "keywords": [
