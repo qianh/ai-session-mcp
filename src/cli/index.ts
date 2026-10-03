@@ -136,6 +136,16 @@ export async function runCli(
     command: process.execPath,
     args: [resolve(argv[1] ?? process.argv[1] ?? "brainhub-mcp")],
   };
+  const schedulerFor = (args: string[]): SchedulerManager =>
+    new SchedulerManager({
+      platform: process.platform,
+      homeDir: homedir(),
+      command: launch.command,
+      args,
+      ...(process.env.XDG_CONFIG_HOME
+        ? { xdgConfigHome: process.env.XDG_CONFIG_HOME }
+        : {}),
+    });
   program
     .name("brainhub-mcp")
     .description("BrainHub local session MCP")
@@ -273,7 +283,7 @@ export async function runCli(
 
   program
     .command("setup", { isDefault: true })
-    .description("configure BrainHub MCP on macOS")
+    .description("configure BrainHub MCP")
     .option("--yes", "accept the default session backfill")
     .option("--drive-root-id <id>", "choose an existing brain-hub folder")
     .option(
@@ -291,6 +301,9 @@ export async function runCli(
         let lastModelPercent = -1;
         const service = new SetupService({
           platform: process.platform,
+          ensureSecretStore: async () => {
+            await secretsFor(await load()).probe?.();
+          },
           ensureConfig: async () => {
             const loaded = await load();
             const nextConfig = options.obsidianVault
@@ -322,6 +335,7 @@ export async function runCli(
               },
             });
             if (reusable) return reusable;
+            await secrets.probe?.();
             if (!options.json) {
               print(
                 "即将打开浏览器。请选择 BrainHub 要连接的 Google 账号并同意授权。",
@@ -394,12 +408,11 @@ export async function runCli(
           },
           installScheduler: async ({ portrait }) => {
             const loaded = await load();
-            await new SchedulerManager({
-              platform: process.platform,
-              homeDir: homedir(),
-              command: launch.command,
-              args: [...launch.args, "--config", loaded.configFile],
-            }).install(
+            await schedulerFor([
+              ...launch.args,
+              "--config",
+              loaded.configFile,
+            ]).install(
               loaded.config.scheduler.at,
               loaded.config.scheduler.syncAt,
               { portrait },
@@ -521,12 +534,13 @@ export async function runCli(
         json?: boolean;
       }) => {
         const loaded = await load();
+        const secrets = secretsFor(loaded);
+        await secrets.probe?.();
         if (!options.json) {
           print(
             "A browser will open. Choose the Google account BrainHub should use.",
           );
         }
-        const secrets = secretsFor(loaded);
         const staged = await oauthFactory(
           loaded.config.drive.oauthClientFile,
           secrets,
@@ -887,12 +901,11 @@ export async function runCli(
             const loaded = await load();
             const at = loaded.config.scheduler.at;
             const syncAt = loaded.config.scheduler.syncAt;
-            await new SchedulerManager({
-              platform: process.platform,
-              homeDir: homedir(),
-              command: launch.command,
-              args: [...launch.args, "--config", loaded.configFile],
-            }).install(at, syncAt);
+            await schedulerFor([
+              ...launch.args,
+              "--config",
+              loaded.configFile,
+            ]).install(at, syncAt);
             scheduler = { installed: true, at, syncAt };
           }
         }
@@ -932,12 +945,11 @@ export async function runCli(
         const loaded = await load();
         const at = options.at ?? loaded.config.scheduler.at;
         const syncAt = options.syncAt ?? loaded.config.scheduler.syncAt;
-        const manager = new SchedulerManager({
-          platform: process.platform,
-          homeDir: homedir(),
-          command: launch.command,
-          args: [...launch.args, "--config", loaded.configFile],
-        });
+        const manager = schedulerFor([
+          ...launch.args,
+          "--config",
+          loaded.configFile,
+        ]);
         await manager.install(at, syncAt);
         print({ installed: true, at, syncAt }, options.json);
       },
@@ -946,12 +958,7 @@ export async function runCli(
     .command("uninstall")
     .option("--json")
     .action(async (options: { json?: boolean }) => {
-      const manager = new SchedulerManager({
-        platform: process.platform,
-        homeDir: homedir(),
-        command: launch.command,
-        args: launch.args,
-      });
+      const manager = schedulerFor(launch.args);
       await manager.uninstall();
       print({ installed: false }, options.json);
     });
@@ -959,12 +966,7 @@ export async function runCli(
     .command("status")
     .option("--json")
     .action(async (options: { json?: boolean }) => {
-      const manager = new SchedulerManager({
-        platform: process.platform,
-        homeDir: homedir(),
-        command: launch.command,
-        args: launch.args,
-      });
+      const manager = schedulerFor(launch.args);
       print(await manager.status(), options.json);
     });
 
@@ -987,7 +989,7 @@ export async function runCli(
         });
         try {
           const answer = await prompt.question(
-            "移除客户端注册、授权、Keychain、配置、索引和模型缓存？Drive 与 Obsidian 内容会保留。[y/N] ",
+            "移除客户端注册、授权、系统密钥环凭据、配置、索引和模型缓存？Drive 与 Obsidian 内容会保留。[y/N] ",
           );
           if (!isAffirmativeConfirmation(answer)) {
             print({ uninstalled: false, cancelled: true }, options.json);
@@ -999,14 +1001,14 @@ export async function runCli(
       }
       const loaded = await load();
       const secrets = secretsFor(loaded);
-      const credential = await secrets.get();
+      // A locked keyring must not block uninstall; clearKeychain reports it.
+      const credential = await secrets.get().catch(() => null);
       const registry = new ClientRegistry(launch);
-      const scheduler = new SchedulerManager({
-        platform: process.platform,
-        homeDir: homedir(),
-        command: launch.command,
-        args: [...launch.args, "--config", loaded.configFile],
-      });
+      const scheduler = schedulerFor([
+        ...launch.args,
+        "--config",
+        loaded.configFile,
+      ]);
       const result = await new UninstallService({
         platform: process.platform,
         inspectClients: async () =>

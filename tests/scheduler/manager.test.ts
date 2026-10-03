@@ -74,11 +74,14 @@ describe("scheduler manager", () => {
     });
   });
 
-  it("rejects scheduler installation outside macOS", async () => {
+  it("installs, reports, and removes systemd user timers", async () => {
     const homeDir = await mkdtemp(join(tmpdir(), "brainhub-systemd-"));
     const directory = join(homeDir, ".config", "systemd", "user");
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "brainhub-upload.service"), "obsolete");
+    await writeFile(
+      join(directory, "brainhub-upload.service"),
+      "ExecStart=obsolete --sources claude-code,codex,grok-build\n",
+    );
     const calls: Array<{ command: string; args: string[] }> = [];
     const manager = new SchedulerManager({
       platform: "linux",
@@ -90,10 +93,81 @@ describe("scheduler manager", () => {
       },
     });
 
-    await expect(manager.install("03:17", "06:23")).rejects.toThrow(
-      "BrainHub MCP v1 supports macOS only",
+    await manager.install("03:17", "06:23");
+
+    const service = await readFile(
+      join(directory, "brainhub-upload.service"),
+      "utf8",
     );
-    expect(calls).toEqual([]);
+    const timer = await readFile(
+      join(directory, "brainhub-upload.timer"),
+      "utf8",
+    );
+    const syncService = await readFile(
+      join(directory, "brainhub-sync.service"),
+      "utf8",
+    );
+    expect(service).toContain("Type=oneshot");
+    expect(service).toContain(
+      "ExecStart=/usr/bin/node /opt/brain-mcp/dist/cli/index.js --config /tmp/config upload --json",
+    );
+    expect(service).not.toContain("obsolete");
+    expect(service).not.toContain("--sources");
+    expect(timer).toContain("OnCalendar=*-*-* 03:17:00");
+    expect(timer).toContain("Persistent=true");
+    expect(syncService).toContain("portrait sync --json");
+    expect(calls).toEqual([
+      { command: "systemctl", args: ["--user", "daemon-reload"] },
+      {
+        command: "systemctl",
+        args: ["--user", "enable", "--now", "brainhub-upload.timer"],
+      },
+      {
+        command: "systemctl",
+        args: ["--user", "enable", "--now", "brainhub-sync.timer"],
+      },
+    ]);
+    await expect(manager.status()).resolves.toEqual({
+      installed: true,
+      upload: { installed: true },
+      sync: { installed: true },
+      platform: "linux",
+    });
+
+    await manager.install("03:17", "06:23", { portrait: false });
+    await expect(manager.status()).resolves.toMatchObject({
+      upload: { installed: true },
+      sync: { installed: false },
+    });
+
+    await manager.uninstall();
+    await expect(manager.status()).resolves.toEqual({
+      installed: false,
+      upload: { installed: false },
+      sync: { installed: false },
+      platform: "linux",
+    });
+    expect(calls.at(-1)).toEqual({
+      command: "systemctl",
+      args: ["--user", "daemon-reload"],
+    });
+  });
+
+  it("rejects scheduler installation outside macOS and Linux", async () => {
+    const manager = new SchedulerManager({
+      platform: "win32",
+      homeDir: await mkdtemp(join(tmpdir(), "brainhub-win-")),
+      command: "node",
+      args: [],
+      runner: async () => undefined,
+    });
+
+    await expect(manager.install("02:00", "06:00")).rejects.toThrow(
+      "BrainHub MCP supports macOS and Linux",
+    );
+    await expect(manager.uninstall()).rejects.toThrow(
+      "BrainHub MCP supports macOS and Linux",
+    );
   });
 
   it("can install the upload job without an Obsidian portrait job", async () => {

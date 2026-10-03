@@ -10,6 +10,7 @@ export interface OAuthLoopbackSession {
 
 export interface OAuthLoopbackOptions {
   openUrl?: (url: string) => Promise<unknown>;
+  printUrl?: (url: string) => void;
   timeoutMs?: number;
 }
 
@@ -78,7 +79,10 @@ export async function startOAuthLoopback(
   return {
     redirectUri,
     async authorize(authorizationUrl: string): Promise<string> {
-      await (options.openUrl ?? open)(authorizationUrl);
+      // xdg-open can be missing or silently do nothing on headless Linux,
+      // so the URL is always printed for manual copying.
+      (options.printUrl ?? printAuthorizationUrl)(authorizationUrl);
+      await (options.openUrl ?? open)(authorizationUrl).catch(() => undefined);
       timeout = setTimeout(
         () => settleError(new Error("OAuth callback timed out")),
         options.timeoutMs ?? 5 * 60_000,
@@ -98,4 +102,10 @@ export async function startOAuthLoopback(
       });
     },
   };
+}
+
+function printAuthorizationUrl(url: string): void {
+  process.stderr.write(
+    `If the browser does not open, visit this URL to authorize BrainHub:\n${url}\n`,
+  );
 }

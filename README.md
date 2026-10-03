@@ -1,12 +1,14 @@
 # BrainHub MCP
 
-BrainHub MCP 是一个仅在本机运行的 macOS MCP 服务。它读取 Claude Code、Codex CLI、Grok Build 和 Cursor 的本地会话，脱敏后上传到用户自己选择的 Google Drive，并提供本地语义搜索、完整会话读取和数字画像读取。
+BrainHub MCP 是一个仅在本机运行的 MCP 服务，支持 macOS 与 Linux。它读取 Claude Code、Codex CLI、Grok Build 和 Cursor 的本地会话，脱敏后上传到用户自己选择的 Google Drive，并提供本地语义搜索、完整会话读取和数字画像读取。
 
 原始会话始终只读。BrainHub MCP 不包含 cards、周报、云端处理、遥测或自更新器。
 
 ## 安装
 
-第一版要求 macOS 与 Node.js `>=22.12.0`。
+要求 macOS 或 Linux，以及 Node.js `>=22.12.0`。
+
+Linux 使用 XDG 路径：配置在 `${XDG_CONFIG_HOME:-~/.config}/brainhub-mcp/config.toml`，状态在 `${XDG_STATE_HOME:-~/.local/state}/brainhub-mcp/`，模型缓存在 `${XDG_CACHE_HOME:-~/.cache}/brainhub-mcp/models/`。refresh token 只进入 Secret Service（`secret-tool`）。Arch Linux 需要安装 `libsecret`，并运行一个 Secret Service 提供者，例如 `gnome-keyring`。每日任务是 systemd user timer，单元写在 `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`。用户未登录时 timer 不会运行；需要登出后继续执行时，运行 `loginctl enable-linger "$USER"`。
 
 ```bash
 npm install -g brainhub-mcp
@@ -21,11 +23,11 @@ npm 安装或升级会自动为检测到的客户端安装 Skill，并注册尚�
 2. 创建或绑定该账号 My Drive 根目录下的 `brain-hub/`。若存在多个同名目录，流程会停止并要求用户明确选择。
 3. 下载固定版本的 `Xenova/multilingual-e5-small`，并显示进度。
 4. 统计本机可回填会话的数量与字节数；默认确认后上传历史会话。
-5. 自动注册已安装的 MCP 客户端，并安装每日上传 launchd 任务。
+5. 自动注册已安装的 MCP 客户端，并安装每日上传定时任务。macOS 使用 launchd，Linux 使用 systemd user timer。
 6. 为已检测到的 Codex、Grok Build、Claude Code 和 Cursor 安装 BrainHub 的 5 个独立 Skill；用户只需安装一次 BrainHub。
 7. 如显式指定 Obsidian vault，安装独立的每日画像覆盖任务。
 
-流程可以重复运行。`setup` 会实时验证已有 Google 凭据与账号身份，并复用已完成的账号绑定、回填决定、客户端注册和 launchd 配置；未完成且仍有待重试项的回填会继续执行，不会再次询问。
+流程可以重复运行。`setup` 会实时验证已有 Google 凭据与账号身份，并复用已完成的账号绑定、回填决定、客户端注册和定时任务；未完成且仍有待重试项的回填会继续执行，不会再次询问。
 
 ## 会话来源
 
@@ -45,7 +47,7 @@ npm 安装或升级会自动为检测到的客户端安装 Skill，并注册尚�
 
 画像来源可在配置文件中设置：`portrait.directory`（相对 My Drive 根目录的目录，可为空）和 `portrait.fileName`（文件名）。默认值仍为根目录下的 `Digital_Twin_Profile.md`。
 
-- `hub_status`：返回账号、root、上传、模型、索引、launchd、画像、Obsidian 和 npm 版本状态。
+- `hub_status`：返回账号、root、上传、模型、索引、定时任务、画像、Obsidian 和 npm 版本状态。定时任务状态的字段名仍是 `launchd`。
 
 ## Skill 调用
 
@@ -75,9 +77,9 @@ brainhub-mcp auth switch
 brainhub-mcp auth switch --yes
 ```
 
-每个“Google 账号 + 选定的 `brain-hub` root”绑定都有独立的上传水位、回填决定、重试状态和本地搜索索引。切换到首次使用的绑定时会执行与 `setup` 相同的历史回填确认；切回已完成的绑定时直接恢复原状态。refresh token 只进入 macOS Keychain，不写入 TOML、SQLite 或日志。
+每个“Google 账号 + 选定的 `brain-hub` root”绑定都有独立的上传水位、回填决定、重试状态和本地搜索索引。切换到首次使用的绑定时会执行与 `setup` 相同的历史回填确认；切回已完成的绑定时直接恢复原状态。refresh token 只进入操作系统密钥环：macOS Keychain 或 Linux Secret Service。它不写入 TOML、SQLite 或日志。
 
-会话与图片只写入 `brain-hub/inbox/`。搜索的脱敏文本分块、向量、manifest 和 Drive change cursor 只保存在当前 Mac 的 SQLite 中，不写回 Drive。模型不可用时自动降级为关键词搜索，恢复后自动补齐缺失向量；Drive 刷新失败时保留旧 cursor 和最近有效索引并标记 stale。
+会话与图片只写入 `brain-hub/inbox/`。搜索的脱敏文本分块、向量、manifest 和 Drive change cursor 只保存在当前设备的 SQLite 中，不写回 Drive。模型不可用时自动降级为关键词搜索，恢复后自动补齐缺失向量；Drive 刷新失败时保留旧 cursor 和最近有效索引并标记 stale。
 
 ## 升级与卸载
 
@@ -87,7 +89,7 @@ brainhub-mcp auth switch --yes
 npm install -g brainhub-mcp@latest
 ```
 
-从不支持 Cursor 的旧版本升级后，运行一次 `brainhub-mcp setup` 或 `brainhub-mcp scheduler install`，以便用新的来源无关任务替换旧的三来源 launchd 参数。历史回填决定会保存当时获准的来源范围；旧版未完成回填重试时仍只处理原三来源，不会静默上传旧 Cursor 会话。如需回填，显式执行：
+从不支持 Cursor 的旧版本升级后，运行一次 `brainhub-mcp setup` 或 `brainhub-mcp scheduler install`，以便用新的来源无关任务替换旧的三来源定时任务参数。历史回填决定会保存当时获准的来源范围；旧版未完成回填重试时仍只处理原三来源，不会静默上传旧 Cursor 会话。如需回填，显式执行：
 
 ```bash
 brainhub-mcp upload --sources cursor --backfill
@@ -99,7 +101,7 @@ brainhub-mcp upload --sources cursor --backfill
 brainhub-mcp uninstall
 ```
 
-卸载会移除 MCP 客户端注册、launchd、Google OAuth 授权、Keychain 凭据、配置、本地索引、状态和模型缓存。它不会删除或改写 Google Drive 与 Obsidian 中的任何内容。
+卸载会移除 MCP 客户端注册、定时任务、Google OAuth 授权、系统密钥环凭据、配置、本地索引、状态和模型缓存。它不会删除或改写 Google Drive 与 Obsidian 中的任何内容。
 
 ## 源码开发
 

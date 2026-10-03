@@ -138,10 +138,49 @@ describe("setup service", () => {
     });
   });
 
-  it("rejects setup outside macOS before changing state", async () => {
+  it("probes the Linux secret store before writing setup state", async () => {
+    const ensureSecretStore = vi.fn(async () => undefined);
     const ensureConfig = vi.fn(async () => undefined);
     const service = new SetupService({
       platform: "linux",
+      ensureSecretStore,
+      ensureConfig,
+      connectGoogle: async () => ({ email: "user@example.com" }),
+      prepareModel: async () => undefined,
+      runBackfill: async () => ({
+        sessions: 0,
+        bytes: 0,
+        confirmed: true,
+        uploaded: 0,
+        completed: true,
+      }),
+      inspectClients: async () => ({
+        claude: { available: false, registered: false },
+        codex: { available: false, registered: false },
+        grok: { available: false, registered: false },
+        cursor: { available: false, registered: false },
+      }),
+      registerClient: async () => undefined,
+      installClientSkills: async () => undefined,
+      installScheduler: async () => undefined,
+      inspectObsidian: async () => ({ configured: false }),
+      report: () => undefined,
+    });
+
+    await expect(service.run()).resolves.toMatchObject({
+      account: { email: "user@example.com" },
+      scheduler: { installed: true },
+    });
+    expect(ensureSecretStore).toHaveBeenCalledOnce();
+    expect(ensureSecretStore.mock.invocationCallOrder[0]).toBeLessThan(
+      ensureConfig.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("rejects setup on Windows before changing state", async () => {
+    const ensureConfig = vi.fn(async () => undefined);
+    const service = new SetupService({
+      platform: "win32",
       ensureConfig,
       connectGoogle: async () => ({ email: "user@example.com" }),
       prepareModel: async () => undefined,

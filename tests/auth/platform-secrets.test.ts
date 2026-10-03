@@ -34,14 +34,164 @@ describe("platform secret storage", () => {
     expect(calls[0]?.input).toBeUndefined();
   });
 
-  it("rejects non-macOS secret storage", () => {
+  it("rejects secret storage outside macOS and Linux", () => {
     expect(
       () =>
         new PlatformSecretStore({
-          platform: "linux",
+          platform: "win32",
           account: "default",
         }),
-    ).toThrow("BrainHub MCP v1 supports macOS only");
+    ).toThrow("BrainHub MCP supports macOS and Linux");
+  });
+
+  it("stores Linux secrets through secret-tool stdin", async () => {
+    const values = new Map<string, string>();
+    const calls: Array<{ args: string[]; input: string | undefined }> = [];
+    const runner: CommandRunner = async (command, args, input) => {
+      expect(command).toBe("secret-tool");
+      calls.push({ args, input });
+      const service = args[args.indexOf("service") + 1] ?? "";
+      const account = args[args.indexOf("account") + 1] ?? "";
+      const key = `${service}:${account}`;
+      if (args[0] === "search") return "";
+      if (args[0] === "lookup") {
+        if (!values.has(key)) {
+          const error = new Error("secret-tool exited with 1:") as Error & {
+            exitCode: number;
+          };
+          error.exitCode = 1;
+          throw error;
+        }
+        return `${values.get(key)}\n`;
+      }
+      if (args[0] === "store") {
+        values.set(key, input ?? "");
+        return "";
+      }
+      if (args[0] === "clear") {
+        if (!values.has(key)) {
+          const error = new Error("secret-tool exited with 1:") as Error & {
+            exitCode: number;
+          };
+          error.exitCode = 1;
+          throw error;
+        }
+        values.delete(key);
+        return "";
+      }
+      throw new Error(`unexpected ${args[0]}`);
+    };
+    const store = new PlatformSecretStore({
+      platform: "linux",
+      account: "config-abc",
+      runner,
+    });
+
+    await store.probe();
+    await store.set("refresh-secret");
+    expect(await store.get()).toBe("refresh-secret");
+    await store.delete();
+    await store.delete();
+    expect(await store.get()).toBeNull();
+    expect(calls[0]?.args).toEqual([
+      "search",
+      "service",
+      "brainhub-mcp-google-oauth",
+    ]);
+    expect(calls[1]).toEqual({
+      args: [
+        "store",
+        "--label",
+        "BrainHub MCP Google OAuth",
+        "service",
+        "brainhub-mcp-google-oauth",
+        "account",
+        "config-abc",
+      ],
+      input: "refresh-secret",
+    });
+    expect(calls[1]?.args).not.toContain("refresh-secret");
+  });
+
+  it("reports a missing secret-tool and an unavailable Secret Service", async () => {
+    const missing = new PlatformSecretStore({
+      platform: "linux",
+      account: "default",
+      runner: async () => {
+        const error = new Error("spawn secret-tool ENOENT") as Error & {
+          code: string;
+        };
+        error.code = "ENOENT";
+        throw error;
+      },
+    });
+    await expect(missing.probe()).rejects.toMatchObject({
+      code: "SECRET_STORE_UNAVAILABLE",
+      message: expect.stringMatching(/libsecret/),
+    });
+
+    const offline = new PlatformSecretStore({
+      platform: "linux",
+      account: "default",
+      runner: async () => {
+        const error = new Error(
+          "secret-tool exited with 1: The name org.freedesktop.secrets was not provided by any .service files",
+        ) as Error & { exitCode: number };
+        error.exitCode = 1;
+        throw error;
+      },
+    });
+    await expect(offline.probe()).rejects.toMatchObject({
+      code: "SECRET_STORE_UNAVAILABLE",
+      message: expect.stringMatching(/gnome-keyring or kwallet/),
+    });
+
+    const broken = new PlatformSecretStore({
+      platform: "linux",
+      account: "broken",
+      runner: async () => {
+        const error = new Error(
+          "secret-tool exited with 1: The name org.freedesktop.secrets was not provided by any .service files",
+        ) as Error & { exitCode: number };
+        error.exitCode = 1;
+        throw error;
+      },
+    });
+    await expect(broken.delete()).rejects.toThrow(/freedesktop\.secrets/);
+  });
+
+  it("reports a locked or unreachable Secret Service instead of a missing credential", async () => {
+    const locked = new PlatformSecretStore({
+      platform: "linux",
+      account: "default",
+      runner: async () => {
+        const error = new Error(
+          "secret-tool exited with 1: Cannot get secret of a locked object",
+        ) as Error & { exitCode: number; stderr: string };
+        error.exitCode = 1;
+        error.stderr = "Cannot get secret of a locked object";
+        throw error;
+      },
+    });
+    await expect(locked.get()).rejects.toMatchObject({
+      code: "SECRET_STORE_UNAVAILABLE",
+      message: expect.stringMatching(/locked object/),
+    });
+
+    const missingTool = new PlatformSecretStore({
+      platform: "linux",
+      account: "default",
+      runner: async () => {
+        const error = new Error("spawn secret-tool ENOENT") as Error & {
+          code: string;
+        };
+        error.code = "ENOENT";
+        throw error;
+      },
+    });
+    await expect(missingTool.get()).rejects.toMatchObject({
+      code: "SECRET_STORE_UNAVAILABLE",
+    });
   });
 
   it("uses a stable credential account per resolved config file", () => {

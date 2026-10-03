@@ -1,3 +1,5 @@
 # Require an operating-system secret store
 
-BrainHub MCP stores Google refresh tokens only in macOS Keychain. Setup verifies Keychain access before starting OAuth and stops with a diagnostic when it is unavailable. There is no plaintext file fallback, even with restrictive file permissions. Linux and Windows credential stores are deferred with those platforms rather than included as unverified v1 paths.
+Linux Secret Service support is added by [ADR 0033](0033-support-linux-with-secret-service-and-systemd.md). Windows credential storage remains unsupported. Plaintext file fallback remains forbidden.
+
+BrainHub MCP stores Google refresh tokens only in an operating-system secret store: macOS Keychain or Linux Secret Service. Setup verifies that store before starting OAuth and stops with a diagnostic when it is unavailable. There is no plaintext file fallback, even with restrictive file permissions.

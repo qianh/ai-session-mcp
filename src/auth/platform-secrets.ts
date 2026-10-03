@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { BrainHubError } from "../domain/errors.js";
+import { assertSupportedPlatform } from "../domain/platform.js";
 import type { SecretStore } from "./secret-store.js";
 
 export type CommandRunner = (
@@ -20,10 +21,12 @@ const defaultRunner: CommandRunner = async (command, args, input) =>
     child.on("close", (code) => {
       if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"));
       else {
+        const detail = Buffer.concat(stderr).toString("utf8").trim();
         const error = new Error(
-          `${command} exited with ${code}: ${Buffer.concat(stderr).toString("utf8").trim()}`,
-        ) as Error & { exitCode: number | null };
+          `${command} exited with ${code}: ${detail}`,
+        ) as Error & { exitCode: number | null; stderr: string };
         error.exitCode = code;
+        error.stderr = detail;
         reject(error);
       }
     });
@@ -46,15 +49,44 @@ export class PlatformSecretStore implements SecretStore {
     this.#service = options.service ?? "brainhub-mcp-google-oauth";
     this.#account = options.account;
     this.#runner = options.runner ?? defaultRunner;
-    if (this.#platform !== "darwin") {
+    assertSupportedPlatform(this.#platform);
+  }
+
+  async probe(): Promise<void> {
+    if (this.#platform !== "linux") return;
+    try {
+      await this.#runner("secret-tool", ["search", "service", this.#service]);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === "ENOENT") {
+        throw new BrainHubError(
+          "SECRET_STORE_UNAVAILABLE",
+          "secret-tool is not installed. On Arch Linux, install libsecret and a Secret Service provider such as gnome-keyring.",
+        );
+      }
       throw new BrainHubError(
-        "PLATFORM_UNSUPPORTED",
-        "BrainHub MCP v1 supports macOS only",
+        "SECRET_STORE_UNAVAILABLE",
+        `Secret Service is unavailable. Start gnome-keyring or kwallet, then rerun setup. ${secretToolStderr(error) || "unknown error"}`,
+        true,
       );
     }
   }
 
   async get(): Promise<string | null> {
+    if (this.#platform === "linux") {
+      try {
+        const output = await this.#runner("secret-tool", [
+          "lookup",
+          "service",
+          this.#service,
+          "account",
+          this.#account,
+        ]);
+        return output.trim() || null;
+      } catch (error) {
+        if (isAbsentSecretToolItem(error)) return null;
+        throw secretServiceUnavailable(error);
+      }
+    }
     try {
       const output = await this.#runner("security", [
         "find-generic-password",
@@ -71,6 +103,22 @@ export class PlatformSecretStore implements SecretStore {
   }
 
   async set(value: string): Promise<void> {
+    if (this.#platform === "linux") {
+      await this.#runner(
+        "secret-tool",
+        [
+          "store",
+          "--label",
+          "BrainHub MCP Google OAuth",
+          "service",
+          this.#service,
+          "account",
+          this.#account,
+        ],
+        value,
+      );
+      return;
+    }
     await this.#runner("security", [
       "add-generic-password",
       "-U",
@@ -85,6 +133,16 @@ export class PlatformSecretStore implements SecretStore {
 
   async delete(): Promise<void> {
     try {
+      if (this.#platform === "linux") {
+        await this.#runner("secret-tool", [
+          "clear",
+          "service",
+          this.#service,
+          "account",
+          this.#account,
+        ]);
+        return;
+      }
       await this.#runner("security", [
         "delete-generic-password",
         "-s",
@@ -94,8 +152,35 @@ export class PlatformSecretStore implements SecretStore {
       ]);
     } catch (error) {
       const exitCode = (error as { exitCode?: unknown }).exitCode;
-      if (exitCode === 44) return;
+      if (this.#platform === "darwin" && exitCode === 44) return;
+      if (this.#platform === "linux" && isAbsentSecretToolItem(error)) return;
       throw error;
     }
   }
+}
+
+// secret-tool exits 1 without stderr when no item matches; every D-Bus,
+// locked-collection, or prompt failure prints a reason to stderr.
+function isAbsentSecretToolItem(error: unknown): boolean {
+  if ((error as { exitCode?: unknown }).exitCode !== 1) return false;
+  return secretToolStderr(error) === "";
+}
+
+function secretToolStderr(error: unknown): string {
+  const stderr = (error as { stderr?: unknown }).stderr;
+  if (typeof stderr === "string") return stderr.trim();
+  const message = error instanceof Error ? error.message : "";
+  return message.replace(/^secret-tool exited with -?\d+:/, "").trim();
+}
+
+function secretServiceUnavailable(error: unknown): BrainHubError {
+  const detail =
+    (error as { code?: unknown }).code === "ENOENT"
+      ? "secret-tool is not installed"
+      : secretToolStderr(error) || "unknown error";
+  return new BrainHubError(
+    "SECRET_STORE_UNAVAILABLE",
+    `Secret Service could not read the BrainHub credential. Unlock gnome-keyring or kwallet for this session, then retry. ${detail}`,
+    true,
+  );
 }

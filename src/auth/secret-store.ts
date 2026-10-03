@@ -2,6 +2,7 @@ export interface SecretStore {
   get(): Promise<string | null>;
   set(value: string): Promise<void>;
   delete(): Promise<void>;
+  probe?(): Promise<void>;
 }
 
 export class MigratingSecretStore implements SecretStore {
@@ -9,6 +10,10 @@ export class MigratingSecretStore implements SecretStore {
     readonly primary: SecretStore,
     readonly legacy: SecretStore,
   ) {}
+
+  async probe(): Promise<void> {
+    await this.primary.probe?.();
+  }
 
   async get(): Promise<string | null> {
     const current = await this.primary.get();

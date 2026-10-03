@@ -9,7 +9,11 @@ npm install -g brainhub-mcp
 brainhub-mcp setup
 ```
 
-配置文件位于 `~/Library/Application Support/BrainHub/config.toml`。refresh token 只保存在 macOS Keychain，“Google 账号 permission ID + root folder ID”绑定对应的上传状态和搜索索引位于 `~/Library/Application Support/BrainHub/accounts/<hash>/`，模型缓存位于 `~/Library/Caches/BrainHub/models/`。升级旧版状态时，全局旧库只会被首个绑定认领一次，不会复制到之后切换的账号。
+macOS 配置文件位于 `~/Library/Application Support/BrainHub/config.toml`。refresh token 只保存在 macOS Keychain，账号绑定对应的上传状态和搜索索引位于 `~/Library/Application Support/BrainHub/accounts/<hash>/`，模型缓存位于 `~/Library/Caches/BrainHub/models/`。
+
+Linux 配置文件位于 `${XDG_CONFIG_HOME:-~/.config}/brainhub-mcp/config.toml`。refresh token 只保存在 Secret Service。状态和搜索索引位于 `${XDG_STATE_HOME:-~/.local/state}/brainhub-mcp/accounts/<hash>/`，模型缓存位于 `${XDG_CACHE_HOME:-~/.cache}/brainhub-mcp/models/`。Arch Linux 需要 `libsecret` 以及正在运行的 Secret Service，例如 `gnome-keyring`。
+
+升级旧版状态时，全局旧库只会被首个绑定认领一次，不会复制到之后切换的账号。
 
 ## setup 选项
 
@@ -20,7 +24,7 @@ brainhub-mcp setup
 --json                   最终结果使用 JSON 输出
 ```
 
-setup 会先实时验证 Keychain 凭据和 Google Drive 账号身份，再复用已经完成的绑定。首次回填的接受或拒绝决定会持久化；接受后若仍有待重试会话，下次 setup 直接续传，不会重新扫描或询问。模型下载失败不会阻止授权、回填和客户端注册；搜索会暂时使用关键词模式，之后重新运行 setup 即可重试下载。使用全局 `--config <path>` 时，自动注册的 MCP 客户端和 launchd 都会保留该路径。
+setup 会先验证操作系统密钥环和 Google Drive 账号身份，再复用已经完成的绑定。Linux 上若找不到 `secret-tool`，或 D-Bus 没有 `org.freedesktop.secrets`，setup 会在打开浏览器前停止。首次回填的接受或拒绝决定会持久化；接受后若仍有待重试会话，下次 setup 直接续传，不会重新扫描或询问。模型下载失败不会阻止授权、回填和客户端注册；搜索会暂时使用关键词模式，之后重新运行 setup 即可重试下载。使用全局 `--config <path>` 时，自动注册的 MCP 客户端和定时任务都会保留该路径。
 
 没有配置 Obsidian 时只安装每日会话上传任务。发现或显式指定可写 vault 后，才额外安装每日画像同步任务。
 
@@ -70,9 +74,9 @@ My Drive/
 
 MCP 不创建、读取或迁移 `sessions/`，也不因组件升级移动、改写或删除 Drive 内容。远端会话身份固定为 `source + conversation_id`。
 
-## Obsidian 与 launchd
+## Obsidian 与定时任务
 
-每日上传默认在本地时间 02:00 运行。配置 Obsidian 后，画像同步默认在 06:00 运行，并原子覆盖固定文件：
+每日上传默认在本地时间 02:00 运行。macOS 使用 launchd，Linux 使用 `~/.config/systemd/user/` 下的 systemd user timer。配置 Obsidian 后，画像同步默认在 06:00 运行，并原子覆盖固定文件：
 
 ```text
 <vault>/BrainHub/portrait.md
@@ -86,11 +90,11 @@ brainhub-mcp scheduler install --at 02:00 --sync-at 06:00
 brainhub-mcp scheduler uninstall --json
 ```
 
-每日上传任务不固定来源参数，而是在执行时使用当前版本支持的默认来源。从旧版升级后需运行一次 `brainhub-mcp setup` 或 `brainhub-mcp scheduler install` 来覆盖旧的三来源 plist。回填决定会持久化确认时的来源集合；旧版未完成的 accepted 回填仍只重试原三来源，declined 决定也不会被重置。普通增量上传只从升级后的首次 Cursor 扫描开始，旧 Cursor 历史必须由用户显式执行 `brainhub-mcp upload --sources cursor --backfill`。
+每日上传任务不固定来源参数，而是在执行时使用当前版本支持的默认来源。从旧版升级后需运行一次 `brainhub-mcp setup` 或 `brainhub-mcp scheduler install` 来覆盖旧的三来源定时任务。Linux 用户未登录时，user timer 不会运行；需要登出后继续执行时，运行 `loginctl enable-linger "$USER"`。回填决定会持久化确认时的来源集合；旧版未完成的 accepted 回填仍只重试原三来源，declined 决定也不会被重置。普通增量上传只从升级后的首次 Cursor 扫描开始，旧 Cursor 历史必须由用户显式执行 `brainhub-mcp upload --sources cursor --backfill`。
 
 ## 本地语义搜索
 
-模型固定为 `Xenova/multilingual-e5-small` revision `ae61bf0193ce3851dc8a45147e459b04ed783d8a`。脱敏文本分块、384 维向量、manifest 和 Drive change cursor 都只在当前 Mac 的账号级 SQLite 中。
+模型固定为 `Xenova/multilingual-e5-small` revision `ae61bf0193ce3851dc8a45147e459b04ed783d8a`。脱敏文本分块、384 维向量、manifest 和 Drive change cursor 都只在当前设备的账号级 SQLite 中。
 
 ```bash
 brainhub-mcp search query "查询内容" --json

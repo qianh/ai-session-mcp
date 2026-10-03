@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support Linux with Secret Service credentials and systemd user timers.
+
 ## 0.1.2 - 2026-08-25
 
 - Add local Cursor agent transcript capture, redaction, upload, search, and complete session retrieval.

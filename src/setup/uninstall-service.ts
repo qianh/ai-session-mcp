@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 
 import { CLIENT_NAMES, type ClientName } from "../clients/registry.js";
-import { BrainHubError } from "../domain/errors.js";
+import { assertSupportedPlatform } from "../domain/platform.js";
 
 type ClientStatuses = Record<
   ClientName,
@@ -48,12 +48,7 @@ export class UninstallService {
   constructor(readonly dependencies: UninstallDependencies) {}
 
   async run(): Promise<UninstallOutput> {
-    if (this.dependencies.platform !== "darwin") {
-      throw new BrainHubError(
-        "PLATFORM_UNSUPPORTED",
-        "BrainHub MCP v1 supports macOS only",
-      );
-    }
+    assertSupportedPlatform(this.dependencies.platform);
     const warnings: UninstallOutput["warnings"] = [];
     const removedClients: ClientName[] = [];
     try {

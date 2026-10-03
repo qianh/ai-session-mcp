@@ -211,6 +211,7 @@ export class GoogleOAuth {
     config: OAuthClientConfig,
     previousCredential: string | null,
   ): Promise<StagedGoogleAuthorization> {
+    await this.secrets.probe?.();
     const state = randomBytes(24).toString("hex");
     const loopback = await this.#startLoopback(state);
     const client = this.#createClient(

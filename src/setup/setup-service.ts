@@ -1,5 +1,5 @@
-import { BrainHubError } from "../domain/errors.js";
 import { CLIENT_NAMES, type ClientName } from "../clients/registry.js";
+import { assertSupportedPlatform } from "../domain/platform.js";
 import type { BackfillResult } from "./backfill-service.js";
 
 export type { BackfillSummary } from "./backfill-service.js";
@@ -19,6 +19,7 @@ type ClientStatuses = Record<
 
 export interface SetupDependencies {
   platform: NodeJS.Platform;
+  ensureSecretStore?(): Promise<void>;
   ensureConfig(): Promise<void>;
   connectGoogle(): Promise<{ email: string }>;
   prepareModel(
@@ -51,11 +52,9 @@ export class SetupService {
   constructor(readonly dependencies: SetupDependencies) {}
 
   async run(): Promise<SetupOutput> {
-    if (this.dependencies.platform !== "darwin") {
-      throw new BrainHubError(
-        "PLATFORM_UNSUPPORTED",
-        "BrainHub MCP v1 supports macOS only",
-      );
+    assertSupportedPlatform(this.dependencies.platform);
+    if (this.dependencies.platform === "linux") {
+      await this.dependencies.ensureSecretStore?.();
     }
     const warnings: SetupOutput["warnings"] = [];
     await this.dependencies.ensureConfig();

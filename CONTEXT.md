@@ -129,19 +129,19 @@ _Avoid_: 自动选最新、自动合并、清理重复目录
 _Avoid_: 自带 OAuth、开发者配置、手工凭据安装
 
 **安全凭据存储**:
-保存 Google 长期授权凭据的 macOS Keychain。`setup` 在授权前验证 Keychain 可用性，不允许把 refresh token 明文写入配置或普通文件。
+保存 Google 长期授权凭据的操作系统密钥环。macOS 使用 Keychain，Linux 使用 Secret Service。`setup` 在授权前验证密钥环可用性，不允许把 refresh token 明文写入配置或普通文件。
 _Avoid_: 明文 token、文件权限降级、自建凭据文件
 
 **正式支持系统**:
-BrainHub MCP 第一版正式支持 macOS，并使用 Keychain、launchd 与 macOS 平台路径完成零配置安装。Linux 和 Windows 不属于第一版的安装、测试或支持承诺。
-_Avoid_: Linux、Windows、跨平台承诺、systemd
+BrainHub MCP 正式支持 macOS 与 Linux。macOS 使用 Keychain、launchd 与 `~/Library` 路径。Linux 使用 Secret Service、systemd user timer 与 XDG 路径。Windows 不属于安装、测试或支持承诺。
+_Avoid_: Windows、明文凭据、cron
 
 **当前 MCP 账号**:
 一份 BrainHub MCP 配置在任一时刻绑定的唯一 Google 账号。用户可以显式切换当前 MCP 账号，各账号的 Drive 根目录、上传水位和重试状态彼此隔离。
 _Avoid_: 多账号并发、共享水位、Capture 账号
 
 **MCP 设备**:
-安装 BrainHub MCP 的一台 macOS 设备。每台设备具有不可变的设备 ID 和可修改的显示名称；主机名只用于生成初始显示名称，不能作为远端会话身份。
+安装 BrainHub MCP 的一台 macOS 或 Linux 设备。每台设备具有不可变的设备 ID 和可修改的显示名称；主机名只用于生成初始显示名称，不能作为远端会话身份。
 _Avoid_: 主机名身份、账号身份、可变设备 ID
 
 **跨设备会话**:
@@ -164,7 +164,7 @@ _Avoid_: npm 卸载脚本、删除 Drive 数据、删除 Obsidian 文件、残�
 
 > 开发：可以为了以后支持 Linux，把 refresh token 暂时写到 0600 文件吗？
 >
-> 领域专家：不可以。第一版只支持 macOS Keychain，不提供明文凭据降级。
+> 领域专家：不可以。凭据只进入 macOS Keychain 或 Linux Secret Service，不提供明文凭据降级。
 >
 > 开发：应用发行方会代用户保存这些数据吗？
 >

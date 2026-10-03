@@ -100,4 +100,45 @@ describe("complete uninstall", () => {
       "OAUTH_REVOCATION_FAILED",
     ]);
   });
+
+  it("uninstalls on Linux and rejects Windows before cleanup", async () => {
+    const uninstallScheduler = vi.fn(async () => undefined);
+    const removeLocalState = vi.fn(async () => undefined);
+    await expect(
+      new UninstallService({
+        platform: "linux",
+        inspectClients: async () => ({
+          claude: { available: false, registered: false },
+          codex: { available: false, registered: false },
+          grok: { available: false, registered: false },
+          cursor: { available: false, registered: false },
+        }),
+        unregisterClient: async () => undefined,
+        uninstallClientSkills: async () => undefined,
+        uninstallScheduler,
+        revokeGoogle: async () => false,
+        clearKeychain: async () => undefined,
+        removeLocalState,
+      }).run(),
+    ).resolves.toMatchObject({ uninstalled: true });
+    expect(uninstallScheduler).toHaveBeenCalledOnce();
+    expect(removeLocalState).toHaveBeenCalledOnce();
+
+    const windowsCleanup = vi.fn(async () => undefined);
+    await expect(
+      new UninstallService({
+        platform: "win32",
+        inspectClients: async () => {
+          throw new Error("must not inspect clients");
+        },
+        unregisterClient: async () => undefined,
+        uninstallClientSkills: async () => undefined,
+        uninstallScheduler: async () => undefined,
+        revokeGoogle: async () => false,
+        clearKeychain: async () => undefined,
+        removeLocalState: windowsCleanup,
+      }).run(),
+    ).rejects.toMatchObject({ code: "PLATFORM_UNSUPPORTED" });
+    expect(windowsCleanup).not.toHaveBeenCalled();
+  });
 });

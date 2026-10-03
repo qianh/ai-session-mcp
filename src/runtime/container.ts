@@ -407,6 +407,9 @@ export class BrainHubRuntime {
       homeDir: this.homeDir,
       command: this.executable,
       args: this.executableArgs,
+      ...(process.env.XDG_CONFIG_HOME
+        ? { xdgConfigHome: process.env.XDG_CONFIG_HOME }
+        : {}),
     });
     return new StatusService({
       account: {
